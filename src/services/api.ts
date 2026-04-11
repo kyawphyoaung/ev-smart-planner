@@ -1,48 +1,48 @@
 // src/services/api.ts
 
 // const API_URL = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL as string;
-const API_URL = "https://script.google.com/macros/s/AKfycbyb6gl0l9NyMwvuqrF7yykKcZJytmPPh9ss7thajKhyOlGNnugM0ylz8l0uHC_j6WRF/exec"
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyn8AjYhqBM3L8gJhPSTf43K9mYuxpV9Q2NsugO1M5Wr-nGsGYusrPBaDjgprb1muTX/exec"
+// src/services/api.ts
 
-export async function fetchSheetData(sheetName: string) {
+export const fetchSheetData = async (sheetName: string) => {
+  const cacheKey = `ev_cache_${sheetName}`;
   try {
-    const response = await fetch(`${API_URL}?sheetName=${sheetName}`, {
-      method: 'GET',
-      // Apps Script GET request များအတွက် headers ကို ဖြုတ်ထားခြင်းက CORS error ကို ပိုကင်းစေပါတယ်
-      redirect: 'follow', // 👈 ဒါလေး ထည့်ပေးရပါမယ်
-      cache: 'no-store', 
+    const response = await fetch(`${GOOGLE_SCRIPT_URL}?action=read&sheet=${sheetName}`, {
+      redirect: "follow", // 👈 Google Apps Script အတွက် အရေးကြီးသည်
     });
-    const result = await response.json();
-    return result.data;
-  } catch (error) {
-    console.error("Error fetching data:", error);
-    return null;
-  }
-}
 
-export async function appendSheetData(sheetName: string, rowData: any[]) {
-  try {
-    console.log("Sending POST Request to:", API_URL); // URL မှန်မမှန် စစ်ရန်
+    if (!response.ok) throw new Error("Network Error");
     
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      body: JSON.stringify({ sheetName, rowData }),
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      redirect: 'follow' // 👈 Apps Script အတွက် အလွန်အရေးကြီးသော အချက်
-    });
+    const data = await response.json();
     
-    // JSON တန်းမပြောင်းဘဲ Raw Text အရင်ယူစစ်ကြည့်မည်
-    const rawText = await response.text();
-    console.log("Raw Response from Google:", rawText); 
-
-    try {
-      const result = JSON.parse(rawText);
-      return result;
-    } catch (parseError) {
-      console.error("JSON ပြောင်း၍မရပါ။ Google မှ ပြန်ပို့သောစာ:", rawText);
-      return { status: 'error', message: 'Invalid server response' };
+    // 👈 Data က Array အစစ်ဟုတ်မှသာ လက်ခံမည် (Error object များကို ရှောင်ရှားရန်)
+    if (Array.isArray(data)) {
+      localStorage.setItem(cacheKey, JSON.stringify(data));
+      return data;
+    } else if (data && data.data && Array.isArray(data.data)) {
+      localStorage.setItem(cacheKey, JSON.stringify(data.data));
+      return data.data;
+    } else {
+      throw new Error("Invalid Data Format from API");
     }
   } catch (error) {
-    console.error("Fetch Request Error:", error);
-    return { status: 'error' };
+    console.warn(`Offline or API Error for ${sheetName}:`, error);
+    const cachedData = localStorage.getItem(cacheKey);
+    if (cachedData) return JSON.parse(cachedData);
+    return []; // 👈 null အစား [] (Empty Array) ပြန်ပေးမည် (App Crash မဖြစ်စေရန်)
   }
-}
+};
+
+export const appendSheetData = async (sheetName: string, rowData: any[]) => {
+  try {
+    const response = await fetch(GOOGLE_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ action: 'append', sheet: sheetName, data: JSON.stringify(rowData) })
+    });
+    return await response.json();
+  } catch (error) {
+    console.error("Failed to append data", error);
+    throw error;
+  }
+};
