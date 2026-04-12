@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useTheme } from 'next-themes';
 import { getNextEPCStatusChange, EPCStatus } from '../lib/epcSchedule';
-import { fetchSheetData, appendSheetData } from '../services/api';
+import { fetchSheetData, appendSheetData, deleteSheetData } from '../services/api';
 import { calculateCharging } from '../lib/chargingCalc';
 import { Zap, ZapOff, BatteryCharging, MapPin, Car, Moon, Sun, CheckCircle, Activity, LayoutDashboard, Heart, Route, CreditCard, Calendar, History, Clock, TrendingUp, AlertTriangle, Search, ArrowUpDown, X, ShieldCheck, RefreshCw, User as UserIcon, LogOut, ChevronDown, List, Loader2 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
@@ -13,6 +13,9 @@ import { stationData } from '../data/stations';
 import { formatDuration } from '../lib/utils';
 import { Info } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { Trash2 } from 'lucide-react'; // ဖျက်မယ့် Icon လေးပါ
+// page.tsx ရဲ့ ထိပ်ဆုံးမှာ တခြား import တွေနဲ့အတူ ရေးပါ
+import SeinPanPyarImg from '../images/SeinPanPyar.jpeg';
 
 const StationMap = dynamic(() => import('../components/StationMap'), { ssr: false, loading: () => <div className="h-[400px] w-full bg-gray-100 animate-pulse rounded-xl flex items-center justify-center">Map Loading...</div> });
 const Skeleton = ({ className }: { className: string }) => <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`}></div>;
@@ -181,7 +184,12 @@ export default function Home() {
   useEffect(() => {
     if (calcResult || isCharging) {
       const baseTime = (trackingQueue && queueStartTime) ? queueStartTime : new Date();
-      setCalcResult(calculateCharging({ ...calcParams, hasBackupPower: selectedStation?._source?.has_backup_power || false }, baseTime, epcStatus));
+      // setCalcResult(calculateCharging({ ...calcParams, hasBackupPower: selectedStation?._source?.has_backup_power || false }, baseTime, epcStatus));
+      let rawCalc = calculateCharging({ ...calcParams, hasBackupPower: selectedStation?._source?.has_backup_power || false }, baseTime, epcStatus);
+
+      // 👈 Station နားချိန် / ပိတ်ချိန် ရှိမရှိ ထပ်မံစစ်ဆေးခြင်း
+      rawCalc = applyStationHours(rawCalc, selectedStation);
+      setCalcResult(rawCalc);
     }
   }, [calcParams, trackingQueue, queueStartTime, epcStatus, selectedStation]);
 
@@ -250,8 +258,23 @@ export default function Home() {
     };
     setFinalReceiptData(finalData);
     try {
-      await appendSheetData('Charging_Logs', [`C-${Date.now()}`, userUid, finalData.date, finalData.station, finalData.vehicle, finalData.startPercent, finalData.endPercent, finalData.kwh, finalData.lossKwh, finalData.actualMins, finalData.predictedDuration, finalData.cost, finalData.timelineJson, 'Completed']);
-      setDashboardLogs(prev => [...prev, { Date: finalData.date, Station_Name: finalData.station, Consumed_kWh: finalData.kwh, Cost: finalData.cost, Start_Percent: finalData.startPercent, End_Percent: finalData.endPercent, Timeline_Data: finalData.timelineJson }]);
+      await appendSheetData('Charging_Logs', [
+        `C-${Date.now()}`,
+        userUid,
+        calcParams.vehicleId, // 👈 ဤနေရာတွင် VID ပြန်ထည့်ပေးလိုက်ပါပြီ
+        finalData.date,
+        finalData.station,
+        finalData.vehicle,
+        finalData.startPercent,
+        finalData.endPercent,
+        finalData.kwh,
+        finalData.lossKwh,
+        finalData.actualMins,
+        finalData.predictedDuration,
+        finalData.cost,
+        finalData.timelineJson,
+        'Completed'
+      ]);
     } catch (e) { }
   };
 
@@ -275,6 +298,90 @@ export default function Home() {
     try {
       await appendSheetData('Vehicle_Status', Object.values(statusData)); setVehicleStatusLogs(prev => [...prev, statusData]); alert(`ကား ဒေတာ Sync လုပ်ပြီးပါပြီ!`); setStatusInput({ battery: '', range: '', soh: '' });
     } catch (e) { alert("Database သိမ်းဆည်းမှု မအောင်မြင်ပါ။"); }
+  };
+
+  // --- အသစ်ထည့်ရမည့်ကုဒ် (State တွေကြေညာပြီးနောက် Button Handlers များအပေါ်တွင် ထည့်ရန်) ---
+  const handleDeleteRecord = async (sheetName: string, id: string) => {
+    if (!confirm('ဤမှတ်တမ်းကို ဖျက်ရန် သေချာပြီလား?')) return;
+    try {
+      await deleteSheetData(sheetName, id);
+      // UI မှ ချက်ချင်းဖျောက်ရန်
+      if (sheetName === 'Trip_Logs') setTripLogs(prev => prev.filter(log => log.ID !== id));
+      if (sheetName === 'Charging_Logs') setDashboardLogs(prev => prev.filter(log => log.ID !== id));
+      if (sheetName === 'Vehicle_Status') setVehicleStatusLogs(prev => prev.filter(log => log.ID !== id));
+      alert('မှတ်တမ်းဖျက်ပစ်ခြင်း အောင်မြင်ပါသည်။');
+    } catch (e) {
+      alert('ဖျက်ရာတွင် အခက်အခဲရှိနေပါသည်။');
+    }
+  };
+
+  const adjustForStationHours = (calcResultData: any, station: any) => {
+    if (!calcResultData || !station) return calcResultData;
+    // 24hr ဖွင့်တဲ့ဆိုင်ဆိုရင် ဘာမှပြင်စရာမလိုပါ
+    if (station._source.always_open__yes_no__boolean) return calcResultData;
+
+    // ယေဘုယျအားဖြင့် နေ့လည် ၂ နာရီမှ ၃ နာရီ (14:00 to 15:00) နားချိန်ရှိသည်ဟု ယူဆပြီး တွက်ချက်ခြင်း
+    // (မှတ်ချက် - calcResultData ထဲက finishTime အစစ်ကိုရယူပြီး 14 နဲ့ 15 ကြားရောက်နေရင် 1 hr ပေါင်းထည့်ရပါမည်။ 
+    // သို့သော် UI တွင် User သိစေရန် သတိပေးချက်သာ အရင်ပြသထားပါသည်။)
+
+    calcResultData.hasBreakTimeOverlap = true; // Logic အကြမ်းဖျင်း 
+    return calcResultData;
+  };
+
+  // 👈 အသစ်ထည့်ရမည့် Function
+  // 👈 page.tsx မှ applyStationHours ကို ဤကုဒ်ဖြင့် အစားထိုးပါ
+  const applyStationHours = (calcData: any, station: any) => {
+    if (!calcData || !station || station._source.always_open__yes_no__boolean) return calcData;
+
+    let extraMins = 0;
+    let isClosedWarning = false;
+    const source = station._source;
+
+    // ၁။ ဖွင့်ချိန်/ပိတ်ချိန် တွက်ခြင်း
+    const hoursText = source.opening_hours_text || "";
+    let closeHr = 19, closeMin = 30; // Default
+    const timeRegex = /(\d+):?(\d*)\s*(AM|PM)\s*TO\s*(\d+):?(\d*)\s*(AM|PM)/i;
+    const match = hoursText.match(timeRegex);
+    if (match) {
+      closeHr = parseInt(match[4]) + (match[6].toUpperCase() === 'PM' && match[4] !== '12' ? 12 : 0);
+      closeMin = match[5] ? parseInt(match[5]) : 0;
+    }
+
+    const finishMatch = calcData.finishTimeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    if (finishMatch) {
+      let fHr = parseInt(finishMatch[1]) + (finishMatch[3].toUpperCase() === 'PM' && finishMatch[1] !== '12' ? 12 : 0);
+      let fMin = parseInt(finishMatch[2]);
+
+      // ၂။ Station သီးသန့် နားချိန်ရှိမရှိ Data မှတဆင့် စစ်ဆေးခြင်း
+      const hasBreak = source.has_break_time === true;
+      if (hasBreak) {
+        const bStartHr = source.break_start_hr || 14; // Default 2 PM
+        const bEndHr = source.break_end_hr || 15;     // Default 3 PM
+
+        // အားသွင်းပြီးမည့်အချိန်သည် နားချိန်အတွင်း ကျရောက်နေပါက
+        if (fHr >= bStartHr && fHr < bEndHr) {
+          const breakDuration = (bEndHr - bStartHr) * 60; // နားချိန် မိနစ်စုစုပေါင်း
+          extraMins = breakDuration;
+          fHr = bEndHr; // နားချိန်ပြီးမှ ပြန်စမည်ဟု ယူဆပါသည်
+
+          const ampm = fHr >= 12 ? 'PM' : 'AM';
+          const disHr = fHr > 12 ? fHr - 12 : (fHr === 0 ? 12 : fHr);
+          calcData.finishTimeStr = `${disHr}:${fMin.toString().padStart(2, '0')} ${ampm}`;
+        }
+      }
+
+      // ၃။ ဆိုင်ပိတ်ချိန် ကျော်မကျော် စစ်ဆေးခြင်း
+      const finishTotalMins = fHr * 60 + fMin;
+      const closeTotalMins = closeHr * 60 + closeMin;
+      if (finishTotalMins > closeTotalMins) {
+        isClosedWarning = true;
+      }
+    }
+
+    calcData.stationBreakMins = extraMins;
+    calcData.stationClosedWarning = isClosedWarning;
+    calcData.stationBreakText = source.break_time_text; // သတိပေးချက်တွင် ပြသရန် Text
+    return calcData;
   };
 
   // ==========================================
@@ -577,7 +684,10 @@ export default function Home() {
                   <label className="block text-sm font-bold mb-2 text-gray-500">Station ရွေးချယ်ရန်</label>
                   <div className="relative">
                     <Search className="absolute left-3 top-3.5 text-gray-400" size={18} />
-                    <input type="text" placeholder="Station အမည်ဖြင့် ရှာဖွေပါ..." className="w-full border p-3 pl-10 pr-10 rounded-xl dark:bg-gray-900 dark:border-gray-700 outline-none focus:ring-2 focus:ring-blue-500 font-medium transition" value={stationSearch} onChange={(e) => { setStationSearch(e.target.value); setIsDropdownOpen(true); }} onFocus={() => setIsDropdownOpen(true)} />
+                    <input type="text" placeholder="Station အမည်ဖြင့် ရှာဖွေပါ..." className="w-full border p-3 pl-10 pr-10 rounded-xl dark:bg-gray-900 dark:border-gray-700 outline-none focus:ring-2 focus:ring-blue-500 font-medium transition" value={stationSearch}
+                      onChange={(e) => { setStationSearch(e.target.value); setIsDropdownOpen(true); }}
+                      onFocus={() => { setStationSearch(''); setIsDropdownOpen(true); }}
+                    />
                     <ChevronDown className="absolute right-3 top-3.5 text-gray-400 pointer-events-none" size={18} />
                   </div>
                   {isDropdownOpen && (
@@ -601,17 +711,66 @@ export default function Home() {
                   )}
                 </div>
 
+                {/* 👈 အရင် <div className="mb-6 p-4 bg-green-50/50..."> နေရာတွင် ဤ Card အသစ်ဖြင့် အစားထိုးပါ */}
                 {selectedStation && (
-                  <div className="mb-6 p-4 bg-green-50/50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/50 rounded-2xl flex items-start gap-4 shadow-inner">
-                    <div className="bg-green-100 dark:bg-green-800 p-3 rounded-xl"><MapPin className="text-green-600 dark:text-green-300" size={24} /></div>
-                    <div className="flex-1">
-                      <p className="font-black text-green-900 dark:text-green-100 text-lg">{selectedStation._source.name_text}</p>
-                      <p className="text-sm font-medium text-green-700 dark:text-green-400 mt-1">Speed: {selectedStation._source.station__ac_dc__option_ac_dc_station?.toUpperCase()} • {selectedStation._source.price_text} Ks</p>
-                      {selectedStation._source.has_backup_power && <span className="inline-block mt-2 bg-green-200 dark:bg-green-700 text-green-800 dark:text-green-100 text-xs px-2 py-1 rounded font-bold shadow-sm">✓ 24 Hours လျှပ်စစ်မီးရရှိသည်</span>}
+                  <div className="mb-6 overflow-hidden bg-white dark:bg-gray-800 border-2 border-blue-100 dark:border-gray-700 rounded-3xl shadow-sm animate-fade-in">
+                    {/* Cover Photo */}
+                    {selectedStation._source.photos_list_image?.[0] && (
+                      <img
+                        src={selectedStation._source.photos_list_image[0]}
+                        alt={selectedStation._source.name_text}
+                        className="w-full h-56 object-cover object-center"
+                      />
+                    )}
+
+                    <div className="p-5 md:p-6">
+                      <div className="flex justify-between items-start mb-5">
+                        <div>
+                          <h3 className="font-black text-xl text-gray-800 dark:text-white flex items-center gap-2">
+                            <MapPin className="text-blue-500 shrink-0" size={22} /> {selectedStation._source.name_text}
+                          </h3>
+                          <p className="text-sm text-gray-500 font-medium mt-1 pl-7">{selectedStation._source.address_text}</p>
+                        </div>
+                        <button onClick={() => toggleFavorite(selectedStation._id)} className={`p-3 rounded-full transition-colors shadow-sm shrink-0 ${favoriteStations.includes(selectedStation._id) ? 'bg-red-100 text-red-500' : 'bg-gray-100 dark:bg-gray-700 text-gray-400 hover:bg-gray-200'}`}>
+                          <Heart size={20} fill={favoriteStations.includes(selectedStation._id) ? 'currentColor' : 'none'} />
+                        </button>
+                      </div>
+
+                      {/* Station Details Grid */}
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-5 text-sm bg-gray-50 dark:bg-gray-900 p-5 rounded-2xl border border-gray-100 dark:border-gray-800">
+                        <div>
+                          <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Clock size={14} /> ဖွင့်ချိန်/ပိတ်ချိန်</span>
+                          <strong className="dark:text-white">{selectedStation._source.always_open__yes_no__boolean ? '24 Hours (အမြဲဖွင့်သည်)' : selectedStation._source.opening_hours_text}</strong>
+                        </div>
+                        <div>
+                          <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Zap size={14} /> ဈေးနှုန်း (1 kWh)</span>
+                          <strong className="text-green-600 dark:text-green-400 text-lg">{selectedStation._source.price_text} Ks</strong>
+                        </div>
+                        <div className="col-span-2 md:col-span-1">
+                          <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Info size={14} /> ဆက်သွယ်ရန်</span>
+                          <strong className="dark:text-white">{selectedStation._source.phone_number_text || 'ဖုန်းနံပါတ်မရှိပါ'}</strong>
+                        </div>
+
+                        {/* Features Tags */}
+                        <div className="col-span-2 md:col-span-3 pt-4 border-t border-gray-200 dark:border-gray-700 mt-2 flex flex-wrap gap-2 items-center">
+                          <span className="text-xs font-bold text-gray-400 uppercase tracking-wider mr-2">ဝန်ဆောင်မှုများ:</span>
+
+                          {selectedStation._source.station__ac_dc__option_ac_dc_station === 'dc' && (
+                            <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-3 py-1.5 rounded-lg text-xs font-bold border border-blue-200 dark:border-blue-800 shadow-sm">⚡ DC Fast Charging</span>
+                          )}
+
+                          {selectedStation._source.has_backup_power && (
+                            <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 px-3 py-1.5 rounded-lg text-xs font-bold border border-green-200 dark:border-green-800 shadow-sm">✓ 24hr Backup Power</span>
+                          )}
+
+                          {selectedStation._source.list_of_plugs_types_list_option_plug_types?.map((plug: string) => (
+                            <span key={plug} className="bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 px-3 py-1.5 rounded-lg text-xs font-bold uppercase border border-gray-300 dark:border-gray-600 shadow-sm">
+                              🔌 {plug.replace('dc_', '').replace('_', ' ')}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                    <button onClick={() => toggleFavorite(selectedStation._id)} className={`p-3 rounded-full transition-colors shadow-sm ${favoriteStations.includes(selectedStation._id) ? 'bg-red-100 text-red-500' : 'bg-white dark:bg-gray-800 text-gray-400 hover:bg-gray-50'}`}>
-                      <Heart size={20} fill={favoriteStations.includes(selectedStation._id) ? 'currentColor' : 'none'} />
-                    </button>
                   </div>
                 )}
 
@@ -640,12 +799,36 @@ export default function Home() {
                   </div>
                   <div><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Battery Capacity (kWh)</label><input type="number" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.batteryCapacityKwh} onChange={e => updateCalcParams({ batteryCapacityKwh: Number(e.target.value) })} /></div>
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Charger Speed (kW)</label>
-                    <select className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.chargerKw} onChange={e => updateCalcParams({ chargerKw: Number(e.target.value) })}>
-                      <option value={30}>30 kW</option><option value={40}>40 kW</option><option value={50}>50 kW</option><option value={60}>60 kW</option><option value={120}>120 kW</option>
-                    </select>
+                    <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">
+                      Charger Speed (kW)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        list="charger-speeds"
+                        className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        placeholder="Speed ရွေးပါ သို့မဟုတ် ရိုက်ထည့်ပါ"
+                        value={calcParams.chargerKw}
+                        onChange={(e) => updateCalcParams({ chargerKw: Number(e.target.value) })}
+                      />
+                      {/* Dropdown အတွက် မြှားလေး (Optional - ပိုလှအောင် ထည့်ထားပေးတာပါ) */}
+                      <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                        <ChevronDown size={18} />
+                      </div>
+
+                      {/* Dropdown မှာ ပေါ်မယ့် Option များ */}
+                      <datalist id="charger-speeds">
+                        <option value={30}>30 kW</option>
+                        <option value={40}>40 kW</option>
+                        <option value={50}>50 kW</option>
+                        <option value={60}>60 kW</option>
+                        <option value={120}>120 kW</option>
+                      </datalist>
+                    </div>
                   </div>
-                  <div><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">တစ်ပြိုင်နက်သွင်းနိုင်သော အစီးအရေ</label><input type="number" min="1" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.activePorts} onChange={e => updateCalcParams({ activePorts: Math.max(1, Number(e.target.value)) })} /></div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">တစ်ပြိုင်နက်သွင်းနိုင်သော အစီးအရေ</label><input type="number" min="1" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.activePorts} onChange={e => updateCalcParams({ activePorts: Math.max(1, Number(e.target.value)) })} />
+                  </div>
                   <div><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">ရှေ့တွင်စောင့်နေသော ကား (စီး)</label><input type="number" min="0" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.carsInQueue} onChange={e => updateCalcParams({ carsInQueue: Number(e.target.value) })} /></div>
                   <div><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Current Battery %</label><input type="number" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-black text-blue-600 outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.currentPercent} onChange={e => updateCalcParams({ currentPercent: Number(e.target.value) })} /></div>
                   <div><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Target Battery %</label><input type="number" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-black text-green-600 outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.targetPercent} onChange={e => updateCalcParams({ targetPercent: Number(e.target.value) })} /></div>
@@ -670,6 +853,22 @@ export default function Home() {
                   <div className="mt-10 p-6 bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-800 rounded-3xl shadow-inner">
                     <h3 className="font-black text-xl mb-6 dark:text-white border-b border-gray-200 dark:border-gray-700 pb-4">ခန့်မှန်းခြေ အချိန်စာရင်း (Estimation Details)</h3>
                     {calcResult.blackoutMins > 0 && <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 rounded-xl text-red-700 text-sm font-bold flex gap-2"><AlertTriangle size={18} className="shrink-0" /> EPC မီးပျက်ချိန် {formatDuration(calcResult.blackoutMins / 60)} ပါဝင်သွားသဖြင့် အချိန်ပိုကြာပါမည်။</div>}
+                    {calcResult.stationBreakMins > 0 && (
+                      <div className="mb-4 p-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 rounded-xl text-orange-700 text-sm font-bold flex gap-2">
+                        <Clock size={18} className="shrink-0" /> ဆိုင်၏ နားချိန် ({calcResult.stationBreakText || 'နေ့လည်'}) နှင့် တိုက်ဆိုင်နေသဖြင့် အားသွင်းကြာချိန် ပိုမိုကြာမြင့်ပါမည်။
+                      </div>
+                    )}
+                    {calcResult.stationClosedWarning && (
+                      <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 rounded-xl text-red-700 text-sm font-bold flex gap-2">
+                        <AlertTriangle size={18} className="shrink-0" /> ⚠️ သတိပြုရန်: ဤအချိန်ဇယားအရ ဆိုင်ပိတ်ချိန်ကို ကျော်လွန်သွားမည်ဖြစ်သဖြင့် နောက်နေ့ ဆိုင်ဖွင့်မှသာ အားဆက်သွင်းနိုင်ပါမည်။
+                      </div>
+                    )}
+
+                    {!selectedStation?._source?.always_open__yes_no__boolean && (
+                      <div className="mb-6 p-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 rounded-xl text-orange-700 text-sm font-bold flex gap-2">
+                        <Clock size={18} className="shrink-0" /> ဤ Station သည် 24 နာရီဖွင့်လှစ်ခြင်းမရှိပါ။ နေ့လည် (၂ နာရီမှ ၃ နာရီ) နားချိန် သို့မဟုတ် ဆိုင်ပိတ်ချိန်နှင့် တိုက်ဆိုင်ပါက အထက်ပါကြာချိန်ထက် ပိုမိုကြာမြင့်နိုင်ပါသည်။
+                      </div>
+                    )}
                     <div className="space-y-5 text-sm md:text-base font-medium text-gray-600 dark:text-gray-300">
                       <div className="flex justify-between items-center"><span className="flex items-center gap-2"><Clock size={18} /> ကားစောင့်ရမည့် ကြာချိန်</span><span className="font-black text-orange-500 text-lg bg-orange-100 dark:bg-orange-900/30 px-3 py-1 rounded-lg">{calcResult.waitDurationStr}</span></div>
                       <div className="flex justify-between items-center"><span className="flex items-center gap-2"><Calendar size={18} /> အားစသွင်းရမည့် အချိန်</span><span className="font-black text-gray-800 dark:text-white text-lg">{calcResult.startTimeStr}</span></div>
@@ -788,16 +987,30 @@ export default function Home() {
                 <button onClick={handleSaveTripLog} className="w-full bg-blue-600 text-white font-black py-5 rounded-2xl shadow-lg hover:bg-blue-700 transition">Trip မှတ်တမ်းတင်မည်</button>
               </div>
 
+              {/* --- အသစ်ကုဒ် (Car Dashboard Sync Block တစ်ခုလုံးကို အစားထိုးရန်) --- */}
               <div className="bg-indigo-50/50 dark:bg-indigo-900/10 p-6 md:p-8 rounded-3xl border border-indigo-100 dark:border-indigo-900/50 flex flex-col justify-between shadow-sm">
                 <div>
                   <h3 className="font-black text-lg text-indigo-900 dark:text-indigo-300 mb-6 flex items-center gap-2"><RefreshCw size={20} /> Car Dashboard Sync</h3>
-                  <div className="grid grid-cols-1 gap-5 mb-8">
-                    <div><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">လက်ရှိ Battery (%)</label><input type="number" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-black text-indigo-600 outline-none focus:border-indigo-500" value={statusInput.battery} onChange={e => setStatusInput({ ...statusInput, battery: e.target.value })} /></div>
+                  <div className="grid grid-cols-2 gap-5 mb-6">
+                    <div><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">လက်ရှိ Battery (%)</label><input type="number" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-black text-indigo-600 outline-none focus:border-indigo-500" value={statusInput.battery} onChange={e => setStatusInput({ ...statusInput, battery: e.target.value, soh: '100' })} /></div>
                     <div><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">Dashboard Range (km)</label><input type="number" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-bold text-green-600 outline-none focus:border-indigo-500" value={statusInput.range} onChange={e => setStatusInput({ ...statusInput, range: e.target.value })} /></div>
-                    <div><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">Battery SOH (%)</label><input type="number" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-bold outline-none focus:border-indigo-500" value={statusInput.soh} onChange={e => setStatusInput({ ...statusInput, soh: e.target.value })} /></div>
+                  </div>
+                  <button onClick={handleSaveVehicleStatus} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-indigo-700 transition mb-6">ကား ဒေတာ Sync လုပ်မည်</button>
+
+                  {/* User ထည့်ထားသော Status မှတ်တမ်းများ ပြန်ပြရန် */}
+                  <div className="space-y-3 mt-4 max-h-40 overflow-y-auto pr-2">
+                    <p className="text-xs font-bold text-gray-500 uppercase">Sync လုပ်ထားသော မှတ်တမ်းများ</p>
+                    {vehicleStatusLogs.slice().reverse().slice(0, 3).map((vLog: any, idx: number) => (
+                      <div key={idx} className="flex justify-between items-center bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700">
+                        <div className="text-sm">
+                          <p className="font-bold text-indigo-600 dark:text-indigo-400">{vLog.Battery_Percent}% <span className="text-gray-400">|</span> {vLog.Dash_Range_km} km</p>
+                          <p className="text-xs text-gray-500">{vLog.Date}</p>
+                        </div>
+                        <button onClick={() => handleDeleteRecord('Vehicle_Status', vLog.ID)} className="text-red-400 hover:text-red-600 p-2 bg-red-50 dark:bg-red-900/20 rounded-lg transition"><Trash2 size={16} /></button>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <button onClick={handleSaveVehicleStatus} className="w-full bg-indigo-600 text-white font-black py-5 rounded-2xl shadow-lg hover:bg-indigo-700 transition">ကား ဒေတာ Sync လုပ်မည်</button>
               </div>
             </div>
 
@@ -806,12 +1019,19 @@ export default function Home() {
               <div className="overflow-x-auto p-4 md:p-6">
                 <table className="w-full text-sm text-left border-separate border-spacing-y-2">
                   <thead className="text-gray-500 bg-gray-50 dark:bg-gray-900 rounded-2xl">
-                    <tr><th className="p-4 rounded-l-2xl font-bold uppercase tracking-wider text-xs">Date</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Actual Dist.</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Avg kWh</th><th className="p-4 rounded-r-2xl font-bold uppercase tracking-wider text-xs">Bat %</th></tr>
+                    <tr><th className="p-4 rounded-l-2xl font-bold uppercase tracking-wider text-xs">Date</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Actual Dist.</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Avg kWh</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Bat %</th><th className="p-4 rounded-r-2xl text-center"></th></tr>
                   </thead>
                   <tbody>
-                    {dashboardStats.processedTrips.length === 0 ? <tr><td colSpan={4} className="p-8 text-center text-gray-400 font-bold">No Trip Records</td></tr> : dashboardStats.processedTrips.slice().reverse().slice(0, 5).map((log, idx) => (
+                    {dashboardStats.processedTrips.length === 0 ? <tr><td colSpan={5} className="p-8 text-center text-gray-400 font-bold">No Trip Records</td></tr> : dashboardStats.processedTrips.slice().reverse().slice(0, 5).map((log, idx) => (
                       <tr key={idx} className="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-750 shadow-sm transition-all rounded-2xl group">
-                        <td className="p-4 rounded-l-2xl font-medium text-gray-600 dark:text-gray-300">{log.Date || log.Time}</td><td className="p-4 font-black text-lg text-blue-600">{log.actual_dist} <span className="text-sm font-medium text-gray-400">km</span></td><td className="p-4 font-bold text-orange-500">{log.Avg_Consumption || log.AvgConsumption || 0}</td><td className="p-4 rounded-r-2xl font-black text-green-500 bg-green-50/50 dark:bg-green-900/10 group-hover:bg-green-50">{log.Remaining_Percent || log['Remaining Percent'] || 0}%</td>
+                        <td className="p-4 rounded-l-2xl font-medium text-gray-600 dark:text-gray-300">{log.Date || log.Time}</td>
+                        <td className="p-4 font-black text-lg text-blue-600">{log.actual_dist} <span className="text-sm font-medium text-gray-400">km</span></td>
+                        <td className="p-4 font-bold text-orange-500">{log.Avg_Consumption || log.AvgConsumption || 0}</td>
+                        <td className="p-4 font-black text-green-500 bg-green-50/50 dark:bg-green-900/10 group-hover:bg-green-50">{log.Remaining_Percent || log['Remaining Percent'] || 0}%</td>
+                        <td className="p-4 rounded-r-2xl text-right">
+                          {/* Delete Button */}
+                          <button onClick={() => handleDeleteRecord('Trip_Logs', log.ID)} className="text-red-400 hover:text-red-600 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 p-2 rounded-lg transition"><Trash2 size={16} /></button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -835,23 +1055,27 @@ export default function Home() {
                 {isDataLoading ? <Skeleton className="h-40 w-full rounded-2xl" /> : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm text-left border-separate border-spacing-y-3">
+                      {/* --- အသစ်ကုဒ် (Charging History Table ၏ <thead> နှင့် <tbody> များကို ပြင်ရန်) --- */}
                       <thead className="text-gray-500 bg-gray-50 dark:bg-gray-900 rounded-2xl">
-                        <tr><th className="p-4 rounded-l-2xl font-bold uppercase tracking-wider text-xs">Date / Time</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Station</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Battery %</th><th className="p-4 rounded-r-2xl font-bold uppercase tracking-wider text-xs text-right">kWh</th></tr>
+                        <tr><th className="p-4 rounded-l-2xl font-bold uppercase tracking-wider text-xs">Date / Time</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Station</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Battery %</th><th className="p-4 font-bold uppercase tracking-wider text-xs text-right">kWh</th><th className="p-4 rounded-r-2xl"></th></tr>
                       </thead>
                       <tbody>
                         {sortedHistoryLogs.length === 0 ? (
-                          <tr><td colSpan={4} className="p-8 text-center text-gray-400 font-bold bg-gray-50 dark:bg-gray-800 rounded-2xl">မှတ်တမ်းမရှိသေးပါ</td></tr>
+                          <tr><td colSpan={5} className="p-8 text-center text-gray-400 font-bold bg-gray-50 dark:bg-gray-800 rounded-2xl">မှတ်တမ်းမရှိသေးပါ</td></tr>
                         ) : (
                           sortedHistoryLogs.map((log, idx) => (
-                            <tr key={idx} onClick={() => { if (log.Timeline_Data && log.Timeline_Data !== '[]') setSelectedHistoryLog(log); else alert('Timeline အသေးစိတ် မရှိပါ။'); }} className="bg-white dark:bg-gray-800 hover:bg-blue-50 dark:hover:bg-gray-700/50 shadow-sm border border-gray-100 dark:border-gray-700 rounded-2xl cursor-pointer transition-all transform hover:scale-[1.01]">
-                              <td className="p-4 rounded-l-2xl whitespace-nowrap font-medium text-gray-600 dark:text-gray-300">
+                            <tr key={idx} className="bg-white dark:bg-gray-800 hover:bg-blue-50 dark:hover:bg-gray-700/50 shadow-sm border border-gray-100 dark:border-gray-700 rounded-2xl transition-all transform hover:scale-[1.01]">
+                              <td onClick={() => { if (log.Timeline_Data) setSelectedHistoryLog(log); }} className="p-4 rounded-l-2xl whitespace-nowrap font-medium text-gray-600 dark:text-gray-300 cursor-pointer">
                                 <Clock size={14} className="inline mr-2 text-gray-400" />
-                                {/* log['Date & Time'] ကို ထည့်ပေးရပါမယ် */}
                                 {log['Date & Time'] || log.Date || log.Time || '-'}
                               </td>
-                              <td className="p-4 font-bold text-gray-800 dark:text-white">{log.Station_Name || log.Station || '-'}</td>
+                              <td onClick={() => { if (log.Timeline_Data) setSelectedHistoryLog(log); }} className="p-4 font-bold text-gray-800 dark:text-white cursor-pointer">{log.Station_Name || log.Station || '-'}</td>
                               <td className="p-4 font-bold text-gray-500">{log.Start_Percent || log['Start%'] || '-'}% <span className="text-gray-300 mx-1">➔</span> {log.End_Percent || log['End%'] || '-'}%</td>
-                              <td className="p-4 rounded-r-2xl text-right font-black text-lg text-blue-600 bg-blue-50/50 dark:bg-blue-900/10">+{log.Consumed_kWh || log.ConsumedkWh || log['Consumed kWh'] || log.kwh || 0}</td>
+                              <td className="p-4 text-right font-black text-lg text-blue-600 bg-blue-50/50 dark:bg-blue-900/10">+{log.Consumed_kWh || log.ConsumedkWh || log['Consumed kWh'] || log.kwh || 0}</td>
+                              <td className="p-4 rounded-r-2xl text-center">
+                                {/* Delete Button */}
+                                <button onClick={(e) => { e.stopPropagation(); handleDeleteRecord('Charging_Logs', log.ID); }} className="text-red-400 hover:text-red-600 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 p-2 rounded-lg transition"><Trash2 size={16} /></button>
+                              </td>
                             </tr>
                           ))
                         )}
@@ -917,7 +1141,10 @@ export default function Home() {
         {activeTab === 'profile' && (
           <section className="space-y-6">
             <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 relative pb-8 overflow-hidden">
-              <div className="h-40 bg-cover bg-center" style={{ backgroundImage: `url('https://images.unsplash.com/photo-1582236353526-9d5f7fa54d8b?q=80&w=1000&auto=format&fit=crop')` }}></div>
+              <div
+                className="h-40 bg-cover bg-center w-full"
+                style={{ backgroundImage: `url(${SeinPanPyarImg.src})` }}
+              ></div>
               <div className="px-8 flex flex-col items-center -mt-20 relative z-10">
                 <div className="w-40 h-40 bg-white dark:bg-gray-800 p-2 rounded-full shadow-2xl border-4 border-white dark:border-gray-700 mb-6 relative">
                   <img src={userProfile.carImage} alt="Car" className="w-full h-full object-cover rounded-full" />

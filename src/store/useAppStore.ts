@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { ChargeParams } from '../lib/chargingCalc';
+import B10Profile from '../images/B10Profile.jpg';
 
 interface AppState {
   isLoggedIn: boolean;
@@ -47,7 +48,7 @@ export const useAppStore = create<AppState>((set) => ({
             uid: userUid, // 👈
             name: user.Name || user.name || 'EV User',
             carPlate: user.CarPlate || '1T/6919',
-            carImage: user.CarImage || 'https://images.unsplash.com/photo-1672822709214-411bdbe054af?q=80&w=600&auto=format&fit=crop',
+            carImage: B10Profile.src,
             totalDistance: Number(user.TotalDistance) || 0,
           }
         });
@@ -65,8 +66,8 @@ export const useAppStore = create<AppState>((set) => ({
       userProfile: {
         uid: userUid, // 👈
         name: user.Name || 'EV User',
-        carPlate: user.CarPlate || 'UNKNOWN',
-        carImage: user.CarImage || 'https://images.unsplash.com/photo-1672822709214-411bdbe054af?q=80&w=600',
+        carPlate: user.CarPlate || 'XX/XXXX',
+        carImage: B10Profile.src,
         totalDistance: Number(user.TotalDistance) || 0,
       }
     });
@@ -92,9 +93,10 @@ export const useAppStore = create<AppState>((set) => ({
   },
   
   userProfile: {
+    uid: "U-001",       
     name: "EV Owner",
     carPlate: "1T/6919", 
-    carImage: "https://images.unsplash.com/photo-1672822709214-411bdbe054af?q=80&w=600&auto=format&fit=crop", 
+    carImage: B10Profile.src, 
     totalDistance: 15200,
   },
   setUserProfile: (profile) => set((state) => ({ userProfile: { ...state.userProfile, ...profile } })),
