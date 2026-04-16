@@ -6,6 +6,8 @@ const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzLW2IMHKtY6B
 
 export const fetchSheetData = async (sheetName: string) => {
   const cacheKey = `ev_cache_${sheetName}`;
+  
+
   try {
     const response = await fetch(`${GOOGLE_SCRIPT_URL}?action=read&sheet=${sheetName}&t=${Date.now()}`, {
       redirect: "follow", 
@@ -15,7 +17,7 @@ export const fetchSheetData = async (sheetName: string) => {
     
     const data = await response.json();
     
-    // 👈 Data က Array အစစ်ဟုတ်မှသာ လက်ခံမည် (Error object များကို ရှောင်ရှားရန်)
+    
     if (Array.isArray(data)) {
       localStorage.setItem(cacheKey, JSON.stringify(data));
       return data;
@@ -26,10 +28,10 @@ export const fetchSheetData = async (sheetName: string) => {
       throw new Error("Invalid Data Format from API");
     }
   } catch (error) {
-    console.warn(`Offline or API Error for ${sheetName}:`, error);
+    
     const cachedData = localStorage.getItem(cacheKey);
     if (cachedData) return JSON.parse(cachedData);
-    return []; // 👈 null အစား [] (Empty Array) ပြန်ပေးမည် (App Crash မဖြစ်စေရန်)
+    return []; 
   }
 };
 

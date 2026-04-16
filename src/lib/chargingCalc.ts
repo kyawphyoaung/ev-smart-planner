@@ -1,127 +1,106 @@
-// src/lib/chargingCalc.ts
-import { formatDuration } from './utils';
-import { getNextEPCStatusChange, EPCStatus } from './epcSchedule';
+import { EPCStatus, getNextEPCStatusChange } from './epcSchedule';
 
 export interface ChargeParams {
-  vehicleId?: string;
-  currentPercent: number;     
-  targetPercent: number;      
-  batteryCapacityKwh: number; 
-  chargerKw: number;          
-  isLeapmotorB10: boolean;    
-  pricePerKwh: number;        
-  carsInQueue: number;        
-  activePorts: number;        
+  vehicleId: string;
+  currentPercent: number;
+  targetPercent: number;
+  targetMins: number;           // 👈 Time limit အတွက်
+  limitMode: 'percent' | 'time';// 👈 Mode ခွဲရန်
+  batteryCapacityKwh: number;
+  chargerKw: number;
+  isLeapmotorB10: boolean;
+  pricePerKwh: number;
+  carsInQueue: number;
+  activePorts: number;
   avgWaitTimePerCarMins: number;
-  hasBackupPower?: boolean;   // 👈 အသစ်
 }
 
-export function calculateCharging(params: ChargeParams, currentTime: Date = new Date(), currentEpcStatus: EPCStatus = 'POWER_ON') {
-  const { currentPercent, targetPercent, batteryCapacityKwh, chargerKw, isLeapmotorB10, pricePerKwh, carsInQueue, activePorts, avgWaitTimePerCarMins, hasBackupPower } = params;
+// Leapmotor B10 ရဲ့ Real-world Charging Curve
+export const leapmotorB10_Curve = [
+  { soc: 0, max_kw: 80 }, { soc: 82, max_kw: 80 },
+  { soc: 85, max_kw: 60 }, { soc: 88, max_kw: 40 },
+  { soc: 90, max_kw: 29 }, { soc: 98, max_kw: 24 },
+  { soc: 99, max_kw: 15 }, { soc: 100, max_kw: 5 }
+];
 
-  const percentNeeded = targetPercent - currentPercent;
-  if (percentNeeded <= 0) return { warning: 'Target သည် Current ထက် ကြီးရပါမည်။' };
-
-  const actualKwhConsumed = ((percentNeeded / 100) * batteryCapacityKwh) * 1.05;
-
-  let timeHours = 0;
-  if (isLeapmotorB10) {
-    timeHours = actualKwhConsumed / chargerKw;
-  } else {
-    if (targetPercent <= 80) {
-      timeHours = actualKwhConsumed / chargerKw;
-    } else {
-      const percentUnder80 = Math.max(0, 80 - currentPercent);
-      const percentOver80 = targetPercent - Math.max(80, currentPercent);
-      timeHours = (((percentUnder80 / 100) * batteryCapacityKwh * 1.05) / chargerKw) + 
-                  (((percentOver80 / 100) * batteryCapacityKwh * 1.05) / (chargerKw * 0.5));
+export function getActiveKw(currentSoc: number, baseKw: number, isLeapmotorB10: boolean) {
+  if (!isLeapmotorB10) return currentSoc >= 80 ? baseKw * 0.5 : baseKw;
+  
+  let maxKwAllowed = 80;
+  for (let i = 0; i < leapmotorB10_Curve.length; i++) {
+    if (currentSoc <= leapmotorB10_Curve[i].soc) {
+      if (i === 0) { maxKwAllowed = leapmotorB10_Curve[0].max_kw; break; }
+      const prev = leapmotorB10_Curve[i - 1];
+      const next = leapmotorB10_Curve[i];
+      const ratio = (currentSoc - prev.soc) / (next.soc - prev.soc);
+      maxKwAllowed = prev.max_kw - (ratio * (prev.max_kw - next.max_kw));
+      break;
     }
   }
+  return Math.min(baseKw, maxKwAllowed);
+}
 
-  const waitMins = Math.round((carsInQueue / Math.max(1, activePorts)) * avgWaitTimePerCarMins);
-  const chargeMins = Math.round(timeHours * 60); 
+export function calculateCharging(
+  params: ChargeParams & { hasBackupPower?: boolean }, 
+  baseTime: Date, 
+  epcStatus: EPCStatus,
+  stationLimits?: { maxSoc?: number, maxMins?: number } 
+) {
+  let waitMins = 0;
+  if (params.carsInQueue > 0) {
+    waitMins = Math.ceil((params.carsInQueue / params.activePorts) * params.avgWaitTimePerCarMins);
+  }
 
-  let simT = new Date(currentTime);
-  let simStat = currentEpcStatus;
-  let waitMinsRemaining = waitMins;
-  let queueBlackoutMins = 0;
+  let currentSoc = params.currentPercent;
+  
+  let activeTargetSoc = params.limitMode === 'percent' ? params.targetPercent : 100;
+  activeTargetSoc = Math.min(activeTargetSoc, stationLimits?.maxSoc || 100);
 
-  // 👈 hasBackupPower မှန်လျှင် မီးပျက်ချိန်များကို မတွက်တော့ပါ (24 Hours မီးလာသည်ဟု ယူဆမည်)
-  if (!hasBackupPower) {
-    while (waitMinsRemaining > 0) {
-      let nextChange = getNextEPCStatusChange(simT, simStat);
-      let interval = (nextChange.getTime() - simT.getTime()) / 60000;
+  let activeMaxMins = params.limitMode === 'time' ? params.targetMins : Infinity;
+  activeMaxMins = Math.min(activeMaxMins, stationLimits?.maxMins || Infinity);
 
-      if (simStat === 'POWER_ON') {
-        if (interval >= waitMinsRemaining) {
-          simT = new Date(simT.getTime() + waitMinsRemaining * 60000);
-          waitMinsRemaining = 0;
-        } else {
-          waitMinsRemaining -= interval;
-          simT = nextChange;
-          simStat = 'POWER_OFF';
-        }
-      } else { 
-        queueBlackoutMins += interval;
-        simT = nextChange;
-        simStat = 'POWER_ON';
+  let chargeMins = 0;
+  let consumedKwh = 0;
+
+  // မိနစ်အလိုက် Simulation ဖြင့် ကား၏ ရရှိမည့် % နှင့် ကုန်ကျမည့် kWh ကို အတိအကျတွက်ချက်ခြင်း
+  while (currentSoc < activeTargetSoc && chargeMins < activeMaxMins) {
+    let kw = getActiveKw(currentSoc, params.chargerKw, params.isLeapmotorB10);
+    let addedKwh = kw / 60; 
+    consumedKwh += addedKwh;
+    currentSoc += (addedKwh / params.batteryCapacityKwh) * 100;
+    chargeMins++;
+  }
+
+  const startTime = new Date(baseTime.getTime() + waitMins * 60000);
+  const finishTime = new Date(startTime.getTime() + chargeMins * 60000);
+
+  let blackoutMins = 0;
+  if (!params.hasBackupPower) {
+    try {
+      const nextChangeTime = getNextEPCStatusChange(startTime, epcStatus);
+      if (epcStatus === 'POWER_OFF') {
+         blackoutMins = Math.max(0, Math.floor((nextChangeTime.getTime() - startTime.getTime()) / 60000));
+      } else if (finishTime > nextChangeTime) {
+         blackoutMins = 240; 
       }
+    } catch(e) {
+      blackoutMins = epcStatus === 'POWER_OFF' ? 120 : 0;
     }
-
-    if (waitMinsRemaining === 0 && simStat === 'POWER_OFF') {
-      let nextChange = getNextEPCStatusChange(simT, simStat);
-      queueBlackoutMins += (nextChange.getTime() - simT.getTime()) / 60000;
-      simT = nextChange;
-      simStat = 'POWER_ON';
-    }
-  } else {
-    // 24/7 Power Station
-    simT = new Date(simT.getTime() + waitMins * 60000);
   }
 
-  const startChargingTime = new Date(simT); 
-
-  let chargeLeft = chargeMins;
-  let chargeBlackoutMins = 0;
-
-  if (!hasBackupPower) {
-    while (chargeLeft > 0) {
-      let nextChange = getNextEPCStatusChange(simT, simStat);
-      let interval = (nextChange.getTime() - simT.getTime()) / 60000;
-
-      if (simStat === 'POWER_ON') {
-        if (interval >= chargeLeft) {
-          simT = new Date(simT.getTime() + chargeLeft * 60000);
-          chargeLeft = 0;
-        } else {
-          chargeLeft -= interval;
-          simT = nextChange;
-          simStat = 'POWER_OFF';
-        }
-      } else {
-        chargeBlackoutMins += interval;
-        simT = nextChange;
-        simStat = 'POWER_ON';
-      }
-    }
-  } else {
-     // 24/7 Power Station
-     simT = new Date(simT.getTime() + chargeMins * 60000);
-  }
-
-  const finishChargingTime = simT;
-  const totalMins = waitMins + queueBlackoutMins + chargeMins + chargeBlackoutMins;
-  const formatTime = (d: Date) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  const estimatedCost = Math.round(consumedKwh * params.pricePerKwh);
+  const formatTime = (d: Date) => d.toLocaleString('en-US', { hour: 'numeric', minute: 'numeric', hour12: true });
+  const formatDuration = (m: number) => m > 60 ? `${Math.floor(m / 60)} hr ${m % 60} mins` : `${m} mins`;
 
   return {
-    timeStr: formatDuration(totalMins / 60), 
-    waitDurationStr: formatDuration(waitMins / 60),
-    chargeDurationStr: formatDuration(chargeMins / 60),
-    blackoutMins: Math.round(queueBlackoutMins + chargeBlackoutMins),
-    startTimeStr: formatTime(startChargingTime),
-    finishTimeStr: formatTime(finishChargingTime),
-    kwh: parseFloat(actualKwhConsumed.toFixed(2)),
-    cost: Math.round(actualKwhConsumed * pricePerKwh),
-    warning: null
+    waitDurationStr: formatDuration(waitMins),
+    startTimeStr: formatTime(startTime),
+    chargeDurationStr: formatDuration(chargeMins),
+    finishTimeStr: formatTime(new Date(finishTime.getTime() + blackoutMins * 60000)),
+    blackoutMins: blackoutMins,
+    finalSoc: Math.floor(currentSoc),    
+    actualChargeMins: chargeMins,
+    consumedKwh: consumedKwh,
+    estimatedCost: estimatedCost
   };
 }

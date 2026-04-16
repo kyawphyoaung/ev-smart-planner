@@ -23,7 +23,9 @@ export const stationData = {
             "https://86036ea01f8eea5aa507ec09fb0e586a.cdn.bubble.io/f1701566217323x454535211114205400/IMG_20231202_113301.jpg"
           ],
           // 👇 ဘူတာကြီး Station သည် နားချိန်မရှိပါ
-          has_break_time: false 
+          has_break_time: false,
+          max_soc_limit: 90,
+          charge_time_limit_mins: null
         }
       },
       {
@@ -50,7 +52,9 @@ export const stationData = {
           has_break_time: true,
           break_start_hr: 12,
           break_end_hr: 13,
-          break_time_text: "12:00 PM မှ 1:00 PM"
+          break_time_text: "12:00 PM မှ 1:00 PM",
+          max_soc_limit: 80,
+          charge_time_limit_mins: null
         }
       },
       {
@@ -76,7 +80,9 @@ export const stationData = {
           has_break_time: true,
           break_start_hr: 14,
           break_end_hr: 15,
-          break_time_text: "2:00 PM မှ 3:00 PM"
+          break_time_text: "2:00 PM မှ 3:00 PM",
+          max_soc_limit: 100,
+          charge_time_limit_mins: 45
         }
       }
     ]
