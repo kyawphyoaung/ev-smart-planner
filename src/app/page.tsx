@@ -5,7 +5,7 @@ import { useTheme } from 'next-themes';
 import { getNextEPCStatusChange, EPCStatus } from '../lib/epcSchedule';
 import { fetchSheetData, appendSheetData, deleteSheetData } from '../services/api';
 import { calculateCharging, getActiveKw } from '../lib/chargingCalc';
-import { Zap, ZapOff, BatteryCharging, MapPin, Car, Moon, Sun, CheckCircle, Activity, LayoutDashboard, Heart, Route, CreditCard, Calendar, History, Clock, TrendingUp, AlertTriangle, Search, ArrowUpDown, X, ShieldCheck, RefreshCw, User as UserIcon, LogOut, ChevronDown, List, Loader2, Info } from 'lucide-react';
+import { Zap, ZapOff, BatteryCharging, MapPin, Car, Moon, Sun, CheckCircle, Activity, LayoutDashboard, Heart, Route, CreditCard, Calendar, History, Clock, TrendingUp, AlertTriangle, Search, ArrowUpDown, X, ShieldCheck, RefreshCw, User as UserIcon, LogOut, ChevronDown, List, Loader2, Info, Download } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import dynamic from 'next/dynamic';
 import { vehicleData } from '../data/vehicles';
@@ -18,13 +18,29 @@ import SeinPanPyarImg from '../images/SeinPanPyar.jpeg';
 const StationMap = dynamic(() => import('../components/StationMap'), { ssr: false, loading: () => <div className="h-[400px] w-full bg-gray-100 animate-pulse rounded-xl flex items-center justify-center">Map Loading...</div> });
 const Skeleton = ({ className }: { className: string }) => <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`}></div>;
 
+// Date Formatter (dd/mm/yyyy, hh:mm AM/PM) - Google Sheet တွင် အတိအကျ ဝင်စေရန်
+const getFormattedSafeDate = (date = new Date()) => {
+  const d = date.getDate();
+  const m = date.getMonth() + 1;
+  const y = date.getFullYear();
+  let hr = date.getHours();
+  const min = String(date.getMinutes()).padStart(2, '0');
+  const ampm = hr >= 12 ? 'PM' : 'AM';
+  hr = hr % 12;
+  hr = hr ? hr : 12; 
+  // ' ခံထားခြင်းဖြင့် Google Sheet က Date ကို အလိုအလျောက် ပြောင်းလဲပစ်ခြင်းမှ ကာကွယ်သည်
+  return `'${d}/${m}/${y}, ${hr}:${min} ${ampm}`; 
+};
+
+// ပြန်ဖတ်သည့်အခါ ' ပါလာလျှင် ဖယ်ထုတ်ပေးမည့် Helper
+const cleanDateStr = (dateStr: string) => dateStr ? String(dateStr).replace(/^'/, '') : '';
+
 export default function Home() {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [activeTab, setActiveTab] = useState<'planner' | 'dashboard' | 'profile' | 'compare'>('planner');
   const [comparePriority, setComparePriority] = useState<'fast' | 'full'>('fast');
 
-  // --- Store States ---
   const { isLoggedIn, setLogin, logout, currentUser, userProfile, initAuth } = useAppStore();
   const { activeSession, startActiveCharging, resumeActiveCharging, updateActiveCharging, stopActiveCharging } = useAppStore();
 
@@ -37,61 +53,53 @@ export default function Home() {
   const userUid = currentUser?.UID || currentUser?.uid || userProfile?.uid || 'UNKNOWN';
   const userIdentifier = (currentUser?.Phone || currentUser?.phone || "").toString().replace(/'/g, '').trim();
 
-  // --- Auth States ---
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPin, setLoginPin] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  // --- Data Loading States ---
   const [isDataLoading, setIsDataLoading] = useState(true);
   const [initialLoadError, setInitialLoadError] = useState<string | null>(null);
   const [selectedMonth, setSelectedMonth] = useState<string>('');
 
-  // --- Planner States ---
   const [epcStatus, setEpcStatus] = useState<EPCStatus>('POWER_ON');
   const [nextTimeStr, setNextTimeStr] = useState<string>('');
   const [calcResult, setCalcResult] = useState<any>(null);
 
-  // --- Queue States ---
   const [trackingQueue, setTrackingQueue] = useState(false);
   const [initialQueueCount, setInitialQueueCount] = useState(0);
   const [queueStartTime, setQueueStartTime] = useState<Date | null>(null);
   const [activeQueueId, setActiveQueueId] = useState<string | null>(null);
   const [queueHistory, setQueueHistory] = useState<{ time: Date, remaining: number }[]>([]);
 
-  // --- Charging Receipt & Loss ---
   const [energyLossKwh, setEnergyLossKwh] = useState<number>(0);
   const [syncPercentInput, setSyncPercentInput] = useState<string>('');
   const [syncKwhInput, setSyncKwhInput] = useState<string>('');
   const [showReceipt, setShowReceipt] = useState(false);
   const [finalReceiptData, setFinalReceiptData] = useState<any>(null);
+  
+  // Modal for Stop Charging (Manual Cost Input)
+  const [showStopModal, setShowStopModal] = useState(false);
+  const [manualCostInput, setManualCostInput] = useState('');
 
-  // --- Dropdown States ---
   const [stationSearch, setStationSearch] = useState('');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [stationModalInfo, setStationModalInfo] = useState<any | null>(null);
 
-  // --- Dashboard Form States (Added date inputs) ---
   const [tripInput, setTripInput] = useState({ distance: '', durationHr: '', durationMin: '', avgKwh: '', remainingPercent: '', date: '' });
   const [statusInput, setStatusInput] = useState({ battery: '', range: '', soh: '', date: '' });
 
-  // --- Logs States ---
   const [dashboardLogs, setDashboardLogs] = useState<any[]>([]);
   const [tripLogs, setTripLogs] = useState<any[]>([]);
   const [vehicleStatusLogs, setVehicleStatusLogs] = useState<any[]>([]);
-  
-  // 👈 NEW: Total Distance Logs State
   const [totalDistanceLogs, setTotalDistanceLogs] = useState<any[]>([]);
   const [tdInputDistance, setTdInputDistance] = useState('');
   const [tdInputDate, setTdInputDate] = useState('');
 
-  // --- History Table States (Updated for multiple sorting options) ---
   const [historySearch, setHistorySearch] = useState('');
-  const [historySort, setHistorySort] = useState<{key: 'date' | 'kwh', desc: boolean}>({key: 'date', desc: true}); // 👈 Default Date descending
+  const [historySort, setHistorySort] = useState<{key: 'date' | 'kwh', desc: boolean}>({key: 'date', desc: true});
   const [selectedHistoryLog, setSelectedHistoryLog] = useState<any | null>(null);
 
 
-  // === 1. Initial Load & Fetching ===
   useEffect(() => {
     initAuth();
     setMounted(true);
@@ -112,7 +120,7 @@ export default function Home() {
             setTrackingQueue(true);
             setActiveQueueId(inProgressQueue.ID);
             setInitialQueueCount(Number(inProgressQueue.Initial_Cars));
-            setQueueStartTime(new Date(inProgressQueue.Date));
+            setQueueStartTime(new Date(cleanDateStr(inProgressQueue.Date)));
 
             const queueStationName = inProgressQueue.Station_Name || inProgressQueue.Station;
             if (queueStationName) {
@@ -137,8 +145,9 @@ export default function Home() {
             if (localSession.id !== inProgressCharge.ID) {
               resumeActiveCharging({
                 id: inProgressCharge.ID,
-                originalStartTime: new Date(inProgressCharge['Date & Time'] || inProgressCharge.Date).toISOString(),
+                originalStartTime: new Date(cleanDateStr(inProgressCharge['Date & Time'] || inProgressCharge.Date)).toISOString(),
                 originalStartPercent: Number(inProgressCharge['Start%'] || inProgressCharge.Start_Percent),
+                consumedKwh: Number(inProgressCharge.Consumed_kWh || inProgressCharge.ConsumedkWh || 0),
                 logs: JSON.parse(inProgressCharge.Timeline_Data || '[]')
               });
             }
@@ -161,8 +170,8 @@ export default function Home() {
           const filteredTLogs = tLogs.filter((log: any) => log.UID === userUid || log.Phone?.toString().replace(/'/g, '') === userIdentifier);
           setTripLogs(filteredTLogs);
           if (filteredTLogs.length > 0) {
-            const sorted = [...filteredTLogs].sort((a, b) => new Date(b.Date || b.Time).getTime() - new Date(a.Date || a.Time).getTime());
-            const latestDateStr = sorted[0]?.Date;
+            const sorted = [...filteredTLogs].sort((a, b) => new Date(cleanDateStr(b.Date || b.Time)).getTime() - new Date(cleanDateStr(a.Date || a.Time)).getTime());
+            const latestDateStr = cleanDateStr(sorted[0]?.Date);
             if (latestDateStr) {
               const d = new Date(latestDateStr);
               if (!isNaN(d.getTime())) setSelectedMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
@@ -176,17 +185,15 @@ export default function Home() {
           setVehicleStatusLogs(filteredVLogs);
         }
 
-        // 👈 NEW: Fetch Total_Distance_Logs and set initial state
         const tdLogs = await fetchSheetData('Total_Distance_Logs');
         if (Array.isArray(tdLogs)) {
           const userTdLogs = tdLogs.filter((log: any) => log.UID === userUid || log.Phone?.toString().replace(/'/g, '') === userIdentifier);
           setTotalDistanceLogs(userTdLogs);
           if (userTdLogs.length > 0) {
-            const sortedTd = [...userTdLogs].sort((a, b) => new Date(b.DateTime || b.Date_Time).getTime() - new Date(a.DateTime || a.Date_Time).getTime());
+            const sortedTd = [...userTdLogs].sort((a, b) => new Date(cleanDateStr(b.DateTime || b.Date_Time)).getTime() - new Date(cleanDateStr(a.DateTime || a.Date_Time)).getTime());
             useAppStore.getState().setUserProfile({ totalDistance: Number(sortedTd[0].Total_Distance) });
           }
         }
-
       } catch (error) {
         console.error("Data Fetch Error: ", error);
         setInitialLoadError("အင်တာနက်ချိတ်ဆက်မှု ပြဿနာကြောင့် ဒေတာအချို့ ဆွဲယူ၍မရပါ။");
@@ -198,8 +205,6 @@ export default function Home() {
     if (isLoggedIn && mounted && userUid !== 'UNKNOWN') fetchInitialData();
   }, [isLoggedIn, mounted, currentUser, userUid, userIdentifier, resumeActiveCharging, stopActiveCharging]);
 
-
-  // === Login Handler ===
   const handleLogin = async () => {
     const inputPhone = loginPhone.trim();
     if (!inputPhone.startsWith('09')) return alert("ဖုန်းနံပါတ်သည် 09 ဖြင့် စရပါမည်။");
@@ -214,78 +219,48 @@ export default function Home() {
           const sheetPin = String(u.PIN || u.pin).trim();
           return sheetPhone === inputPhone && sheetPin === loginPin.trim();
         });
-
-        if (found) {
-          setLogin(found);
-        } else {
-          alert("ဖုန်းနံပါတ် သို့မဟုတ် စကားဝှက် မှားယွင်းနေပါသည်။");
-        }
+        if (found) setLogin(found);
+        else alert("ဖုန်းနံပါတ် သို့မဟုတ် စကားဝှက် မှားယွင်းနေပါသည်။");
       } else {
         alert("Users Database မှတ်တမ်းမရှိသေးပါ။ (Google Sheet ကို စစ်ဆေးပါ)");
       }
-    } catch (e) {
-      alert("Login Error: " + String(e));
-    }
+    } catch (e) { alert("Login Error: " + String(e)); }
     setIsLoggingIn(false);
   };
 
-  // === EPC Time Updates ===
   useEffect(() => {
     setNextTimeStr(getNextEPCStatusChange(new Date(), epcStatus).toLocaleString('en-US', { hour: 'numeric', minute: 'numeric', hour12: true }));
   }, [epcStatus]);
 
-
   const applyStationHours = (calcData: any, station: any) => {
     if (!calcData || !station || station._source.always_open__yes_no__boolean) return calcData;
-
-    let extraMins = 0;
-    let isClosedWarning = false;
-    const source = station._source;
-
+    let extraMins = 0; let isClosedWarning = false; const source = station._source;
     const hoursText = source.opening_hours_text || "";
     let closeHr = 19, closeMin = 30; 
     const timeRegex = /(\d+):?(\d*)\s*(AM|PM)\s*TO\s*(\d+):?(\d*)\s*(AM|PM)/i;
     const match = hoursText.match(timeRegex);
-    if (match) {
-        closeHr = parseInt(match[4]) + (match[6].toUpperCase() === 'PM' && match[4] !== '12' ? 12 : 0);
-        closeMin = match[5] ? parseInt(match[5]) : 0;
-    }
-
+    if (match) { closeHr = parseInt(match[4]) + (match[6].toUpperCase() === 'PM' && match[4] !== '12' ? 12 : 0); closeMin = match[5] ? parseInt(match[5]) : 0; }
     if (calcData.finishTimeStr) {
       const finishMatch = calcData.finishTimeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
       if (finishMatch) {
           let fHr = parseInt(finishMatch[1]) + (finishMatch[3].toUpperCase() === 'PM' && finishMatch[1] !== '12' ? 12 : 0);
           let fMin = parseInt(finishMatch[2]);
-
           const hasBreak = source.has_break_time === true;
           if (hasBreak) {
-              const bStartHr = source.break_start_hr || 14; 
-              const bEndHr = source.break_end_hr || 15;     
+              const bStartHr = source.break_start_hr || 14; const bEndHr = source.break_end_hr || 15;     
               if (fHr >= bStartHr && fHr < bEndHr) {
-                  const breakDuration = (bEndHr - bStartHr) * 60; 
-                  extraMins = breakDuration;
-                  fHr = bEndHr; 
+                  extraMins = (bEndHr - bStartHr) * 60; fHr = bEndHr; 
                   const ampm = fHr >= 12 ? 'PM' : 'AM';
-                  const disHr = fHr > 12 ? fHr - 12 : (fHr === 0 ? 12 : fHr);
-                  calcData.finishTimeStr = `${disHr}:${fMin.toString().padStart(2, '0')} ${ampm}`;
+                  calcData.finishTimeStr = `${fHr > 12 ? fHr - 12 : (fHr === 0 ? 12 : fHr)}:${fMin.toString().padStart(2, '0')} ${ampm}`;
               }
           }
-
-          const finishTotalMins = fHr * 60 + fMin;
-          const closeTotalMins = closeHr * 60 + closeMin;
-          if (finishTotalMins > closeTotalMins) {
-              isClosedWarning = true;
-          }
+          if (fHr * 60 + fMin > closeHr * 60 + closeMin) isClosedWarning = true;
       }
     }
-
-    calcData.stationBreakMins = extraMins;
-    calcData.stationClosedWarning = isClosedWarning;
-    calcData.stationBreakText = source.break_time_text; 
+    calcData.stationBreakMins = extraMins; calcData.stationClosedWarning = isClosedWarning; calcData.stationBreakText = source.break_time_text; 
     return calcData;
   };
 
-  // === Calculator Auto Updates ===
   useEffect(() => {
     if (calcResult || activeSession.isCharging) {
       const baseTime = (trackingQueue && queueStartTime) ? queueStartTime : new Date();
@@ -297,7 +272,7 @@ export default function Home() {
   }, [calcParams, trackingQueue, queueStartTime, epcStatus, selectedStation, activeSession.isCharging]);
 
 
-  // === Live Charging Simulator (Time-Delta Calculation & Curve) ===
+  // === Live Charging Simulator ===
   useEffect(() => {
     let timer: NodeJS.Timeout;
 
@@ -309,6 +284,7 @@ export default function Home() {
         let simSoc = activeSession.lastSyncPercent;
         let simKwh = activeSession.lastSyncKwh;
 
+        // Curve Calculation
         let minsPassed = Math.floor((now - start) / 60000);
         for(let m=0; m < minsPassed; m++) {
             let kw = getActiveKw(simSoc, calcParams.chargerKw, calcParams.isLeapmotorB10);
@@ -321,28 +297,16 @@ export default function Home() {
         simKwh += kwRem * (remainderSecs / 3600);
         simSoc += (kwRem * (remainderSecs / 3600)) / calcParams.batteryCapacityKwh * 100;
 
-        const newPercent = Math.min(100, Math.floor(simSoc));
-        const newConsumedKwh = simKwh;
+        let newPercent = Math.floor(simSoc);
+        
+        if (newPercent > 100) newPercent = 100; 
 
         if (newPercent !== calcParams.currentPercent) {
            const newLogs = [
              ...activeSession.logs.filter((l: any) => l.isManual), 
-             { time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }), percent: newPercent, kwh: Number(newConsumedKwh.toFixed(2)), isManual: false }
+             { time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }), percent: newPercent, kwh: Number(simKwh.toFixed(2)), isManual: false }
            ];
-           updateActiveCharging(newConsumedKwh, newPercent, newLogs);
-        }
-
-        const stationMaxSoc = selectedStation?._source?.max_soc_limit || 100;
-        const stationTimeLimit = selectedStation?._source?.charge_time_limit_mins || Infinity;
-        const totalChargeMins = (now - new Date(activeSession.originalStartTime!).getTime()) / 60000;
-
-        let isFinished = false;
-        if (calcParams.limitMode === 'percent' && newPercent >= calcParams.targetPercent) isFinished = true;
-        if (calcParams.limitMode === 'time' && totalChargeMins >= calcParams.targetMins) isFinished = true;
-        if (newPercent >= stationMaxSoc || totalChargeMins >= stationTimeLimit) isFinished = true;
-
-        if (isFinished) {
-          handleCompleteCharging(newPercent, newConsumedKwh);
+           updateActiveCharging(simKwh, newPercent, newLogs);
         }
       }, 5000); 
     }
@@ -350,7 +314,6 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [activeSession.isCharging, activeSession.lastSyncTime, activeSession.lastSyncPercent, activeSession.lastSyncKwh, activeSession.logs, calcParams, updateActiveCharging, selectedStation]);
 
-  // --- Button Handlers ---
   const handleCalculate = () => {
     const limits = { maxSoc: selectedStation?._source?.max_soc_limit || undefined, maxMins: selectedStation?._source?.charge_time_limit_mins || undefined };
     let rawCalc = calculateCharging({ ...calcParams, hasBackupPower: selectedStation?._source?.has_backup_power || false }, (trackingQueue && queueStartTime) ? queueStartTime : new Date(), epcStatus, limits);
@@ -363,24 +326,19 @@ export default function Home() {
     if (calcParams.carsInQueue <= 0) return alert("ကားအနည်းဆုံး ၁ စီး ရှိရပါမည်။");
     const now = new Date();
     const qId = `Q-${Date.now()}`;
-
     setTrackingQueue(true); setActiveQueueId(qId); setInitialQueueCount(calcParams.carsInQueue); setQueueStartTime(now); setQueueHistory([{ time: now, remaining: calcParams.carsInQueue }]);
-
-    try { 
-      await appendSheetData('Queue_Logs', [qId, userUid, now.toLocaleString(), selectedStation._source.name_text, calcParams.carsInQueue, 0, 0, 'In Progress']);
-    } catch (e) { }
+    try { await appendSheetData('Queue_Logs', [qId, userUid, getFormattedSafeDate(now), selectedStation._source.name_text, calcParams.carsInQueue, 0, 0, 'In Progress']); } catch (e) { }
   };
 
   const handleCarLeft = async () => {
     const remainingCars = Math.max(0, calcParams.carsInQueue - 1);
     const now = new Date(); updateCalcParams({ carsInQueue: remainingCars }); setQueueHistory(prev => [...prev, { time: now, remaining: remainingCars }]);
-    
     if (remainingCars === 0 && queueStartTime) {
       setTrackingQueue(false);
       const safeTotalMins = Math.max(1, Math.round((now.getTime() - queueStartTime.getTime()) / 60000));
       try {
         if (activeQueueId) await deleteSheetData('Queue_Logs', activeQueueId);
-        await appendSheetData('Queue_Logs', [`Q-${Date.now()}`, userUid, queueStartTime.toLocaleString(), selectedStation?._source?.name_text, initialQueueCount, safeTotalMins, Math.round(safeTotalMins / initialQueueCount), 'Completed']);
+        await appendSheetData('Queue_Logs', [`Q-${Date.now()}`, userUid, getFormattedSafeDate(queueStartTime), selectedStation?._source?.name_text, initialQueueCount, safeTotalMins, Math.round(safeTotalMins / initialQueueCount), 'Completed']);
         setActiveQueueId(null);
       } catch (e) { }
       alert(`သင့်အလှည့်ရောက်ပါပြီ! အားစသွင်းနိုင်ပါပြီ။`);
@@ -389,25 +347,23 @@ export default function Home() {
 
   const startCharging = async () => {
     if (!selectedStation) return alert("Station အရင်ရွေးပါ။");
-
-    if (activeQueueId) {
-      await deleteSheetData('Queue_Logs', activeQueueId);
-      setActiveQueueId(null);
-      setTrackingQueue(false);
-    }
+    if (activeQueueId) { await deleteSheetData('Queue_Logs', activeQueueId); setActiveQueueId(null); setTrackingQueue(false); }
 
     const chargeId = `C-${Date.now()}`;
     startActiveCharging(chargeId, calcParams.currentPercent); 
     setEnergyLossKwh(0);
 
-    const initialData = { id: chargeId, station: selectedStation?._source?.name_text, vehicle: vehicleData.find(v => v.id === calcParams.vehicleId)?.brand, startPercent: calcParams.currentPercent, date: new Date().toLocaleString() };
+    const v = vehicleData.find(v => v.id === calcParams.vehicleId);
+    const vName = v ? `${v.brand} ${v.model}` : 'Leapmotor B10';
+    const startDateStr = getFormattedSafeDate(new Date()); 
+    
+    const initialLog = { time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }), percent: calcParams.currentPercent, kwh: 0, isManual: true };
+    const initialData = [ chargeId, userUid, calcParams.vehicleId, startDateStr, selectedStation._source.name_text, vName, calcParams.currentPercent, '', 0, 0, 0, '', 0, JSON.stringify([initialLog]), 'In Progress' ];
 
-    try {
-      await appendSheetData('Charging_Logs', [initialData.id, userUid, calcParams.vehicleId, initialData.date, initialData.station, initialData.vehicle, initialData.startPercent, '', 0, 0, 0, '', 0, '[]', 'In Progress']);
-    } catch (e) { console.error("Failed to sync initial state to DB"); }
+    try { await appendSheetData('Charging_Logs', initialData); } catch (e) { alert("API Connection Failed"); }
   };
 
-  const handleSyncData = () => {
+  const handleSyncData = async () => {
     let newPercent = Number(syncPercentInput) || calcParams.currentPercent;
     let newKwh = Number(syncKwhInput) || activeSession.consumedKwh;
     
@@ -416,99 +372,182 @@ export default function Home() {
       const loss = Math.max(0, newKwh - expectedKwh);
       setEnergyLossKwh(loss);
       
-      const newManualLog = { 
-        time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }), 
-        percent: newPercent, 
-        kwh: Number(newKwh.toFixed(2)), 
-        isManual: true 
-      };
-      
+      const newManualLog = { time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }), percent: newPercent, kwh: Number(newKwh.toFixed(2)), isManual: true };
       const updatedLogs = [...activeSession.logs.filter((l:any) => l.isManual), newManualLog];
       
       useAppStore.getState().syncActiveCharging(newPercent, newKwh, updatedLogs);
       
-      setSyncPercentInput(''); 
-      setSyncKwhInput('');
-      alert('Sync ပြုလုပ်ပြီးပါပြီ။ လေလွင့်ဆုံးရှုံးမှုနှင့် ကျန်ရှိချိန်များ အလိုအလျောက် Update ဖြစ်သွားပါမည်။');
+      try {
+        if (activeSession.id) {
+          await deleteSheetData('Charging_Logs', activeSession.id);
+          const v = vehicleData.find(v => v.id === calcParams.vehicleId);
+          const vName = v ? `${v.brand} ${v.model}` : 'Leapmotor B10';
+          const startDateStr = getFormattedSafeDate(new Date(activeSession.originalStartTime || Date.now()));
+          await appendSheetData('Charging_Logs', [ activeSession.id, userUid, calcParams.vehicleId, startDateStr, selectedStation?._source?.name_text || '', vName, activeSession.originalStartPercent, '', newKwh, loss, 0, '', 0, JSON.stringify(updatedLogs), 'In Progress' ]);
+        }
+      } catch (e) { console.error("Live Update Failed", e) }
+
+      setSyncPercentInput(''); setSyncKwhInput('');
+      alert('Sync ပြုလုပ်ပြီးပါပြီ။ လေလွင့်ဆုံးရှုံးမှုနှင့် မှတ်တမ်းများ အလိုအလျောက် Update ဖြစ်သွားပါမည်။');
     }
   };
 
-  const handleCompleteCharging = async (finalPercent = calcParams.currentPercent, finalKwh = activeSession.consumedKwh) => {
+  const promptEndSession = () => {
+    const estimatedCost = Math.round(activeSession.consumedKwh * calcParams.pricePerKwh);
+    setManualCostInput(estimatedCost.toString());
+    setShowStopModal(true);
+  };
+
+  const finalizeCompleteCharging = async () => {
+    setShowStopModal(false);
     setShowReceipt(true);
+    const actualCost = Number(manualCostInput) || 0;
+    const finalPercent = calcParams.currentPercent;
+    const finalKwh = activeSession.consumedKwh;
+    
     const actualMins = activeSession.originalStartTime ? Math.round((new Date().getTime() - new Date(activeSession.originalStartTime).getTime()) / 60000) : 0;
-
-    const currentSessionId = activeSession.id; 
-
     const expectedKwh = ((finalPercent - activeSession.originalStartPercent) / 100) * calcParams.batteryCapacityKwh;
     const finalLoss = Math.max(0, finalKwh - expectedKwh);
     setEnergyLossKwh(finalLoss);
 
     const finalLogs = [...activeSession.logs.filter((log:any) => log.isManual), { time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }), percent: finalPercent, kwh: Number(finalKwh.toFixed(2)), isManual: true }];
 
+    const v = vehicleData.find(v => v.id === calcParams.vehicleId);
+    const vName = v ? `${v.brand} ${v.model}` : 'Leapmotor B10';
+    const finishDateStr = getFormattedSafeDate(new Date()); 
+
     const finalData = {
-      station: selectedStation?._source?.name_text, vehicle: vehicleData.find(v => v.id === calcParams.vehicleId)?.brand + " " + vehicleData.find(v => v.id === calcParams.vehicleId)?.model,
-      startPercent: activeSession.originalStartPercent, endPercent: finalPercent, kwh: Number(finalKwh.toFixed(2)), lossKwh: Number(finalLoss.toFixed(2)), actualMins: actualMins, predictedDuration: calcResult?.chargeDurationStr || '-', cost: Math.round(finalKwh * calcParams.pricePerKwh), date: new Date().toLocaleString(), timelineJson: JSON.stringify(finalLogs)
+      station: selectedStation?._source?.name_text, vehicle: vName,
+      startPercent: activeSession.originalStartPercent, endPercent: finalPercent, 
+      kwh: Number(finalKwh.toFixed(2)), lossKwh: Number(finalLoss.toFixed(2)), 
+      actualMins: actualMins, predictedDuration: calcResult?.chargeDurationStr || '-', 
+      cost: actualCost, date: cleanDateStr(finishDateStr), timelineJson: JSON.stringify(finalLogs)
     };
 
     setFinalReceiptData(finalData);
+    const currentSessionId = activeSession.id; 
     stopActiveCharging();
 
     try {
       if (currentSessionId) await deleteSheetData('Charging_Logs', currentSessionId);
-      await appendSheetData('Charging_Logs', [`C-${Date.now()}`, userUid, calcParams.vehicleId, finalData.date, finalData.station, finalData.vehicle, finalData.startPercent, finalData.endPercent, finalData.kwh, finalData.lossKwh, finalData.actualMins, finalData.predictedDuration, finalData.cost, finalData.timelineJson, 'Completed']);
-    } catch (e) { }
+      await appendSheetData('Charging_Logs', [currentSessionId || `C-${Date.now()}`, userUid, calcParams.vehicleId, finishDateStr, finalData.station, finalData.vehicle, finalData.startPercent, finalData.endPercent, finalData.kwh, finalData.lossKwh, finalData.actualMins, finalData.predictedDuration, finalData.cost, finalData.timelineJson, 'Completed']);
+    } catch (e) { console.error("Complete save failed", e); }
   };
 
+  const downloadReceiptImage = () => {
+    if (!finalReceiptData) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 420;
+    canvas.height = 700;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-  // 👈 NEW: Handle Save Trip Log with Total Distance Calculation Logic
+    // Background & Borders
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(10, 10, 400, 680);
+
+    // Text Setup
+    ctx.fillStyle = '#000000';
+    ctx.textAlign = 'center';
+
+    // Header
+    ctx.font = 'bold 24px monospace';
+    ctx.fillText('EV SMART PLANNER', 210, 50);
+    ctx.font = '18px monospace';
+    ctx.fillText('CHARGING RECEIPT', 210, 80);
+
+    const drawDashedLine = (y: number) => {
+      ctx.beginPath();
+      ctx.setLineDash([6, 6]);
+      ctx.moveTo(30, y);
+      ctx.lineTo(390, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+
+    drawDashedLine(110);
+
+    // Content
+    ctx.textAlign = 'left';
+    ctx.font = '16px monospace';
+    let y = 140;
+    const addRow = (label: string, value: string) => {
+      ctx.fillText(label, 30, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(value, 390, y);
+      ctx.textAlign = 'left';
+      y += 35;
+    };
+
+    addRow('Date:', finalReceiptData.date);
+    ctx.font = '14px monospace'; // smaller for long station names
+    addRow('Station:', String(finalReceiptData.station).substring(0,25) + '..');
+    ctx.font = '16px monospace';
+    addRow('Vehicle:', finalReceiptData.vehicle);
+    drawDashedLine(y); y += 35;
+
+    addRow('Start Battery:', `${finalReceiptData.startPercent}%`);
+    addRow('End Battery:', `${finalReceiptData.endPercent}%`);
+    addRow('Consumed Energy:', `${finalReceiptData.kwh} kWh`);
+    if(finalReceiptData.lossKwh > 0) addRow('Energy Loss:', `${finalReceiptData.lossKwh} kWh`);
+    addRow('Duration:', `${finalReceiptData.actualMins} mins`);
+    drawDashedLine(y); y += 35;
+
+    ctx.font = 'bold 20px monospace';
+    addRow('TOTAL AMOUNT:', `${finalReceiptData.cost.toLocaleString()} Ks`);
+
+    // Footer
+    y += 50;
+    ctx.textAlign = 'center';
+    ctx.font = '14px monospace';
+    ctx.fillText('Thank you for choosing Green Energy!', 210, y);
+
+    const link = document.createElement('a');
+    link.download = `EV_Receipt_${Date.now()}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
+
   const handleSaveTripLog = async () => {
     if (!tripInput.distance || !tripInput.avgKwh || !tripInput.remainingPercent) return alert("အချက်အလက်များ အပြည့်အစုံထည့်ပါ။");
-    
-    // User selected date or current time
     const tripDate = tripInput.date ? new Date(tripInput.date) : new Date();
     const tTime = tripDate.getTime();
-
     const usedKwh = (Number(tripInput.distance) / 100) * Number(tripInput.avgKwh);
     const tripDataObj = {
-      ID: `T-${Date.now()}`, UID: userUid, Date: tripDate.toLocaleString(), Distance_km: Number(tripInput.distance),
+      ID: `T-${Date.now()}`, UID: userUid, Date: getFormattedSafeDate(tripDate), Distance_km: Number(tripInput.distance),
       Duration: `${Number(tripInput.durationHr) || 0}hr ${Number(tripInput.durationMin) || 0}mins`, Avg_Consumption: Number(tripInput.avgKwh), Used_kWh: Number(usedKwh.toFixed(2)),
       Efficiency: Number((100 / Number(tripInput.avgKwh)).toFixed(2)), Remaining_Percent: Number(tripInput.remainingPercent)
     };
 
-    // --- ACTUAL DISTANCE CALCULATION ---
-    // Find latest charge BEFORE this new trip
-    const pastCharges = dashboardLogs.filter(c => (c.Status === 'Completed' || !c.Status || c.Status.trim() === '') && new Date(c['Date & Time'] || c.Date || c.Time).getTime() <= tTime);
-    const latestCharge = pastCharges.sort((a,b) => new Date(b['Date & Time'] || b.Date || b.Time).getTime() - new Date(a['Date & Time'] || a.Date || a.Time).getTime())[0];
-    const chargeTime = latestCharge ? new Date(latestCharge['Date & Time'] || latestCharge.Date || latestCharge.Time).getTime() : 0;
+    const pastCharges = dashboardLogs.filter(c => (c.Status === 'Completed' || !c.Status || c.Status.trim() === '') && new Date(cleanDateStr(c['Date & Time'] || c.Date || c.Time)).getTime() <= tTime);
+    const latestCharge = pastCharges.sort((a,b) => new Date(cleanDateStr(b['Date & Time'] || b.Date || b.Time)).getTime() - new Date(cleanDateStr(a['Date & Time'] || a.Date || a.Time)).getTime())[0];
+    const chargeTime = latestCharge ? new Date(cleanDateStr(latestCharge['Date & Time'] || latestCharge.Date || latestCharge.Time)).getTime() : 0;
     
-    // Find latest trip AFTER the latest charge but BEFORE this new trip
-    const pastTrips = tripLogs.filter(t => new Date(t.Date || t.Time).getTime() <= tTime && new Date(t.Date || t.Time).getTime() >= chargeTime);
-    const latestPastTrip = pastTrips.sort((a,b) => new Date(b.Date || b.Time).getTime() - new Date(a.Date || a.Time).getTime())[0];
+    const pastTrips = tripLogs.filter(t => new Date(cleanDateStr(t.Date || t.Time)).getTime() <= tTime && new Date(cleanDateStr(t.Date || t.Time)).getTime() >= chargeTime);
+    const latestPastTrip = pastTrips.sort((a,b) => new Date(cleanDateStr(b.Date || b.Time)).getTime() - new Date(cleanDateStr(a.Date || a.Time)).getTime())[0];
     
     const baselineKm = latestPastTrip ? Number(latestPastTrip.Distance_km || latestPastTrip.Distance || 0) : 0;
     const currentOdo = Number(tripInput.distance);
     let actualDist = currentOdo - baselineKm;
-    if (actualDist < 0) actualDist = currentOdo; // Fallback if data is weird
+    if (actualDist < 0) actualDist = currentOdo; 
 
     try {
       await appendSheetData('Trip_Logs', Object.values(tripDataObj)); 
       setTripLogs(prev => [...prev, tripDataObj]); 
 
-      // --- AUTO UPDATE TOTAL DISTANCE ---
-      // Get the current latest Total Distance Record
-      const sortedTd = [...totalDistanceLogs].sort((a, b) => new Date(b.DateTime || b.Date_Time).getTime() - new Date(a.DateTime || a.Date_Time).getTime());
+      const sortedTd = [...totalDistanceLogs].sort((a, b) => new Date(cleanDateStr(b.DateTime || b.Date_Time)).getTime() - new Date(cleanDateStr(a.DateTime || a.Date_Time)).getTime());
       const latestTdRecord = sortedTd[0];
-      const latestTdTime = latestTdRecord ? new Date(latestTdRecord.DateTime || latestTdRecord.Date_Time).getTime() : 0;
+      const latestTdTime = latestTdRecord ? new Date(cleanDateStr(latestTdRecord.DateTime || latestTdRecord.Date_Time)).getTime() : 0;
       
-      // If this trip is newer than our latest Total Distance record, add it
       if (tTime > latestTdTime && actualDist > 0) {
          const currentTotal = latestTdRecord ? Number(latestTdRecord.Total_Distance) : userProfile.totalDistance;
          const newTotal = currentTotal + actualDist;
          const newTdId = `TD-${Date.now()}`;
-         
-         // Format: ID, UID, DateTime, Total_Distance
-         await appendSheetData('Total_Distance_Logs', [newTdId, userUid, tripDate.toLocaleString(), newTotal]);
-         setTotalDistanceLogs(prev => [...prev, { ID: newTdId, UID: userUid, DateTime: tripDate.toLocaleString(), Total_Distance: newTotal }]);
+         await appendSheetData('Total_Distance_Logs', [newTdId, userUid, getFormattedSafeDate(tripDate), newTotal]);
+         setTotalDistanceLogs(prev => [...prev, { ID: newTdId, UID: userUid, DateTime: getFormattedSafeDate(tripDate), Total_Distance: newTotal }]);
          useAppStore.getState().setUserProfile({ totalDistance: newTotal });
       }
 
@@ -520,38 +559,26 @@ export default function Home() {
   const handleSaveVehicleStatus = async () => {
     if (!statusInput.battery || !statusInput.range || !statusInput.soh) return alert("အချက်အလက်များ အပြည့်အစုံထည့်ပါ။");
     const vDate = statusInput.date ? new Date(statusInput.date) : new Date();
-    const statusData = { ID: `V-${Date.now()}`, UID: userUid, Date: vDate.toLocaleString(), Battery_Percent: Number(statusInput.battery), Dash_Range_km: Number(statusInput.range), SOH_Percent: Number(statusInput.soh) };
+    const statusData = { ID: `V-${Date.now()}`, UID: userUid, Date: getFormattedSafeDate(vDate), Battery_Percent: Number(statusInput.battery), Dash_Range_km: Number(statusInput.range), SOH_Percent: Number(statusInput.soh) };
     try {
       await appendSheetData('Vehicle_Status', Object.values(statusData)); setVehicleStatusLogs(prev => [...prev, statusData]); alert(`ကား ဒေတာ Sync လုပ်ပြီးပါပြီ!`); setStatusInput({ battery: '', range: '', soh: '', date: '' });
     } catch (e) { alert("Database သိမ်းဆည်းမှု မအောင်မြင်ပါ။"); }
   };
 
-  // 👈 NEW: Save Manual Total Distance directly from Profile Page
   const handleSaveTotalDistance = async () => {
     if (!tdInputDistance) return alert("Total Distance ထည့်ပါ။");
     const d = tdInputDate ? new Date(tdInputDate) : new Date();
-    const newTd = {
-      ID: `TD-${Date.now()}`,
-      UID: userUid,
-      DateTime: d.toLocaleString(),
-      Total_Distance: Number(tdInputDistance)
-    };
+    const newTd = { ID: `TD-${Date.now()}`, UID: userUid, DateTime: getFormattedSafeDate(d), Total_Distance: Number(tdInputDistance) };
     try {
       await appendSheetData('Total_Distance_Logs', [newTd.ID, newTd.UID, newTd.DateTime, newTd.Total_Distance]);
       const newLogs = [...totalDistanceLogs, newTd];
       setTotalDistanceLogs(newLogs);
       
-      // Update global state if this is the newest record
-      const sortedTd = [...newLogs].sort((a, b) => new Date(b.DateTime || b.Date_Time).getTime() - new Date(a.DateTime || a.Date_Time).getTime());
-      if (sortedTd[0].ID === newTd.ID) {
-        useAppStore.getState().setUserProfile({ totalDistance: newTd.Total_Distance });
-      }
-      setTdInputDistance('');
-      setTdInputDate('');
-      alert('Total Distance Update လုပ်ပြီးပါပြီ။');
-    } catch (e) {
-      alert('Database သိမ်းဆည်းမှု မအောင်မြင်ပါ။');
-    }
+      const sortedTd = [...newLogs].sort((a, b) => new Date(cleanDateStr(b.DateTime || b.Date_Time)).getTime() - new Date(cleanDateStr(a.DateTime || a.Date_Time)).getTime());
+      if (sortedTd[0].ID === newTd.ID) useAppStore.getState().setUserProfile({ totalDistance: newTd.Total_Distance });
+      
+      setTdInputDistance(''); setTdInputDate(''); alert('Total Distance Update လုပ်ပြီးပါပြီ။');
+    } catch (e) { alert('Database သိမ်းဆည်းမှု မအောင်မြင်ပါ။'); }
   };
 
   const handleDeleteRecord = async (sheetName: string, id: string) => {
@@ -563,21 +590,18 @@ export default function Home() {
       if (sheetName === 'Vehicle_Status') setVehicleStatusLogs(prev => prev.filter(log => log.ID !== id));
       if (sheetName === 'Total_Distance_Logs') setTotalDistanceLogs(prev => prev.filter(log => log.ID !== id));
       alert('မှတ်တမ်းဖျက်ပစ်ခြင်း အောင်မြင်ပါသည်။');
-    } catch (e) {
-      alert('ဖျက်ရာတွင် အခက်အခဲရှိနေပါသည်။');
-    }
+    } catch (e) { alert('ဖျက်ရာတွင် အခက်အခဲရှိနေပါသည်။'); }
   };
 
-
   // ==========================================
-  // Analytics Logic (Fixed Sorting Bug)
+  // Analytics Logic 
   // ==========================================
   const dashboardStats = useMemo(() => {
     const rawSelected = selectedMonth || new Date().toISOString().substring(0, 7);
     const safeDateParse = (dStr: any) => {
       if (!dStr) return null;
       try {
-        const d = new Date(dStr);
+        const d = new Date(cleanDateStr(dStr));
         if (isNaN(d.getTime())) return null;
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
       } catch (e) { return null; }
@@ -589,21 +613,13 @@ export default function Home() {
       if (!log) return 0;
       const dStr = log['Date & Time'] || log.Date || log.Time;
       if (!dStr) return 0;
-      const d = new Date(dStr);
+      const d = new Date(cleanDateStr(dStr));
       return isNaN(d.getTime()) ? 0 : d.getTime();
     };
 
     const unifiedTimeline: any[] = [];
-    tripLogs.forEach(t => {
-      const tTime = getT(t);
-      if (tTime > 0) unifiedTimeline.push({ type: 'TRIP', time: tTime, data: t });
-    });
-    dashboardLogs.forEach(c => {
-      const cTime = getT(c);
-      if (cTime > 0 && (c.Status === 'Completed' || !c.Status || c.Status.trim() === '')) {
-        unifiedTimeline.push({ type: 'CHARGE', time: cTime, data: c });
-      }
-    });
+    tripLogs.forEach(t => { const tTime = getT(t); if (tTime > 0) unifiedTimeline.push({ type: 'TRIP', time: tTime, data: t }); });
+    dashboardLogs.forEach(c => { const cTime = getT(c); if (cTime > 0 && (c.Status === 'Completed' || !c.Status || c.Status.trim() === '')) { unifiedTimeline.push({ type: 'CHARGE', time: cTime, data: c }); } });
 
     unifiedTimeline.sort((a, b) => a.time - b.time);
 
@@ -611,9 +627,8 @@ export default function Home() {
     const processedTrips: any[] = [];
 
     unifiedTimeline.forEach(event => {
-      if (event.type === 'CHARGE') {
-        baselineKm = 0;
-      } else if (event.type === 'TRIP') {
+      if (event.type === 'CHARGE') { baselineKm = 0; } 
+      else if (event.type === 'TRIP') {
         const currentOdo = Number(event.data.Distance_km || event.data.Distance || event.data['Distance (km)'] || 0);
         let actualDist = currentOdo - baselineKm;
         if (actualDist < 0) actualDist = currentOdo;
@@ -626,7 +641,14 @@ export default function Home() {
     const monthCharges = dashboardLogs.filter(c => safeDateParse(c.Date || c.Time || c['Date & Time']) === currentMonthFilter);
 
     const totalDist = monthTrips.reduce((sum, t) => sum + t.actual_dist, 0);
-    const totalUsedKwh = monthTrips.reduce((sum, t) => sum + Number(t.Used_kWh || t.UsedkWh || t['Used kWh'] || 0), 0);
+    // 👈 FIXED: Accurate Total Used kWh calculation from actual_dist and Avg_Consumption
+    const totalUsedKwh = monthTrips.reduce((sum, t) => {
+      const avg = Number(t.Avg_Consumption || t.AvgConsumption || 0);
+      const dist = Number(t.actual_dist || 0);
+      const calculatedKwh = (dist / 100) * avg;
+      const sheetKwh = Number(t.Used_kWh || t.UsedkWh || t['Used kWh'] || 0);
+      return sum + (calculatedKwh > 0 ? calculatedKwh : sheetKwh);
+    }, 0);
     const totalRecharged = monthCharges.reduce((sum, c) => sum + Number(c.Consumed_kWh || c.ConsumedkWh || c['Consumed kWh'] || c.kwh || 0), 0);
     const totalSpent = monthCharges.reduce((sum, c) => sum + Number(c.Cost || c.Total_Cost || c['Total Cost'] || 0), 0);
 
@@ -645,10 +667,7 @@ export default function Home() {
 
     const maxTime = Math.max(getT(latestTrip), getT(latestCharge), getT(latestStatus));
 
-    let currentBattery = 0;
-    let currentRange = 0;
-    let rangeSource = "Estimated";
-    let currentSOH = autoSOH;
+    let currentBattery = 0; let currentRange = 0; let rangeSource = "Estimated"; let currentSOH = autoSOH;
 
     if (maxTime > 0) {
       if (getT(latestStatus) === maxTime && latestStatus) {
@@ -666,10 +685,7 @@ export default function Home() {
     }
 
     if (currentBattery === 0) currentBattery = calcParams.currentPercent;
-
-    if (rangeSource !== "Car Sync") {
-      currentRange = (currentBattery / 100) * MAX_RANGE_KM * (currentSOH / 100);
-    }
+    if (rangeSource !== "Car Sync") currentRange = (currentBattery / 100) * MAX_RANGE_KM * (currentSOH / 100);
 
     const dailyAvgKm = monthTrips.length > 1 ? (totalDist / monthTrips.length) : 30;
     const daysUntilCharge = dailyAvgKm > 0 ? (currentRange / dailyAvgKm) : 0;
@@ -683,7 +699,6 @@ export default function Home() {
     return { totalDist, totalUsedKwh, totalRecharged, totalSpent, currentBattery, currentRange, rangeSource, currentSOH, nextChargeDate, batColor, autoSOH, processedTrips };
   }, [tripLogs, dashboardLogs, vehicleStatusLogs, selectedMonth, calcParams.batteryCapacityKwh, calcParams.currentPercent, userProfile.totalDistance]);
 
-
   useEffect(() => {
     if (dashboardStats.currentBattery > 0 && !activeSession.isCharging) {
       updateCalcParams({ currentPercent: dashboardStats.currentBattery });
@@ -695,11 +710,10 @@ export default function Home() {
     return stationData.hits.hits.filter(s => s._source.name_text.toLowerCase().includes(stationSearch.toLowerCase()));
   }, [stationSearch]);
 
-  // 👈 NEW: Charging History Sorting Logic with Multiple Options
   const sortedHistoryLogs = useMemo(() => {
     return dashboardLogs
       .filter(log => {
-        const dateVal = log['Date & Time'] || log.Date || log.Time || '';
+        const dateVal = cleanDateStr(log['Date & Time'] || log.Date || log.Time || '');
         return String(dateVal).toLowerCase().includes(historySearch.toLowerCase());
       })
       .sort((a, b) => {
@@ -708,20 +722,15 @@ export default function Home() {
           const valB = Number(b.Consumed_kWh || b.ConsumedkWh || b['Consumed kWh'] || b.kwh || 0);
           return historySort.desc ? valB - valA : valA - valB;
         } else {
-          const valA = new Date(a['Date & Time'] || a.Date || a.Time).getTime();
-          const valB = new Date(b['Date & Time'] || b.Date || b.Time).getTime();
+          const valA = new Date(cleanDateStr(a['Date & Time'] || a.Date || a.Time)).getTime();
+          const valB = new Date(cleanDateStr(b['Date & Time'] || b.Date || b.Time)).getTime();
           return historySort.desc ? valB - valA : valA - valB;
         }
       });
   }, [dashboardLogs, historySearch, historySort]);
 
 
-  // ==========================================
-  // UI Render
-  // ==========================================
-  if (!mounted) {
-    return <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900"><Loader2 className="animate-spin text-blue-600" size={48} /></div>;
-  }
+  if (!mounted) return <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900"><Loader2 className="animate-spin text-blue-600" size={48} /></div>;
 
   if (!isLoggedIn) {
     return (
@@ -793,22 +802,11 @@ export default function Home() {
                            setCalcResult(null);
                         }
                       }}
-                      onFocus={() => { 
-                        if(stationSearch.trim().length > 0) setIsDropdownOpen(true); 
-                      }}
+                      onFocus={() => { if(stationSearch.trim().length > 0) setIsDropdownOpen(true); }}
                       onBlur={() => setTimeout(() => setIsDropdownOpen(false), 200)}
                     />
                     {selectedStation && (
-                      <button 
-                        onClick={() => {
-                          useAppStore.getState().setSelectedStation(null);
-                          setStationSearch('');
-                          setCalcResult(null);
-                        }}
-                        className="absolute right-10 top-3 text-red-400 hover:text-red-600"
-                      >
-                        <X size={18} />
-                      </button>
+                      <button onClick={() => { useAppStore.getState().setSelectedStation(null); setStationSearch(''); setCalcResult(null); }} className="absolute right-10 top-3 text-red-400 hover:text-red-600"><X size={18} /></button>
                     )}
                     <ChevronDown className="absolute right-3 top-3.5 text-gray-400 pointer-events-none" size={18} />
                   </div>
@@ -817,12 +815,8 @@ export default function Home() {
                       {filteredStations.map(s => (
                         <li key={s._id} className="p-4 hover:bg-blue-50 dark:hover:bg-gray-700 cursor-pointer border-b dark:border-gray-700 last:border-0 flex justify-between items-center"
                           onClick={() => {
-                            useAppStore.getState().setSelectedStation(s);
-                            setStationSearch(s._source.name_text);
-                            setIsDropdownOpen(false);
-                            if (s._source?.has_backup_power) {
-                              setEpcStatus('POWER_ON');
-                            }
+                            useAppStore.getState().setSelectedStation(s); setStationSearch(s._source.name_text); setIsDropdownOpen(false);
+                            if (s._source?.has_backup_power) setEpcStatus('POWER_ON');
                           }}>
                           <div><p className="font-bold dark:text-white">{s._source.name_text}</p><p className="text-xs text-gray-500 mt-1 truncate max-w-[200px]">{s._source.address_text}</p></div>
                           <button onClick={(e) => { e.stopPropagation(); setStationModalInfo(s); }} className="text-blue-600 bg-blue-100 dark:bg-blue-900/30 px-3 py-1 rounded-lg text-xs font-bold">Detail</button>
@@ -836,55 +830,16 @@ export default function Home() {
                 {selectedStation && (
                   <div className="animate-in fade-in duration-500">
                     <div className="mb-6 overflow-hidden bg-white dark:bg-gray-800 border-2 border-blue-100 dark:border-gray-700 rounded-3xl shadow-sm">
-                      {selectedStation._source.photos_list_image?.[0] && (
-                        <img
-                          src={selectedStation._source.photos_list_image[0]}
-                          alt={selectedStation._source.name_text}
-                          className="w-full h-56 object-cover object-center"
-                        />
-                      )}
-
+                      {selectedStation._source.photos_list_image?.[0] && ( <img src={selectedStation._source.photos_list_image[0]} alt="station" className="w-full h-56 object-cover object-center" /> )}
                       <div className="p-5 md:p-6">
                         <div className="flex justify-between items-start mb-5">
-                          <div>
-                            <h3 className="font-black text-xl text-gray-800 dark:text-white flex items-center gap-2">
-                              <MapPin className="text-blue-500 shrink-0" size={22} /> {selectedStation._source.name_text}
-                            </h3>
-                            <p className="text-sm text-gray-500 font-medium mt-1 pl-7">{selectedStation._source.address_text}</p>
-                          </div>
-                          <button onClick={() => toggleFavorite(selectedStation._id)} className={`p-3 rounded-full transition-colors shadow-sm shrink-0 ${favoriteStations.includes(selectedStation._id) ? 'bg-red-100 text-red-500' : 'bg-gray-100 dark:bg-gray-700 text-gray-400 hover:bg-gray-200'}`}>
-                            <Heart size={20} fill={favoriteStations.includes(selectedStation._id) ? 'currentColor' : 'none'} />
-                          </button>
+                          <div><h3 className="font-black text-xl text-gray-800 dark:text-white flex items-center gap-2"><MapPin className="text-blue-500 shrink-0" size={22} /> {selectedStation._source.name_text}</h3><p className="text-sm text-gray-500 font-medium mt-1 pl-7">{selectedStation._source.address_text}</p></div>
+                          <button onClick={() => toggleFavorite(selectedStation._id)} className={`p-3 rounded-full transition-colors shadow-sm shrink-0 ${favoriteStations.includes(selectedStation._id) ? 'bg-red-100 text-red-500' : 'bg-gray-100 dark:bg-gray-700 text-gray-400 hover:bg-gray-200'}`}><Heart size={20} fill={favoriteStations.includes(selectedStation._id) ? 'currentColor' : 'none'} /></button>
                         </div>
-
                         <div className="grid grid-cols-2 md:grid-cols-3 gap-5 text-sm bg-gray-50 dark:bg-gray-900 p-5 rounded-2xl border border-gray-100 dark:border-gray-800">
-                          <div>
-                            <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Clock size={14} /> ဖွင့်ချိန်/ပိတ်ချိန်</span>
-                            <strong className="dark:text-white">{selectedStation._source.always_open__yes_no__boolean ? '24 Hours (အမြဲဖွင့်သည်)' : selectedStation._source.opening_hours_text}</strong>
-                          </div>
-                          <div>
-                            <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Zap size={14} /> ဈေးနှုန်း (1 kWh)</span>
-                            <strong className="text-green-600 dark:text-green-400 text-lg">{selectedStation._source.price_text} Ks</strong>
-                          </div>
-                          <div className="col-span-2 md:col-span-1">
-                            <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Info size={14} /> ဆက်သွယ်ရန်</span>
-                            <strong className="dark:text-white">{selectedStation._source.phone_number_text || 'ဖုန်းနံပါတ်မရှိပါ'}</strong>
-                          </div>
-
-                          <div className="col-span-2 md:col-span-3 pt-4 border-t border-gray-200 dark:border-gray-700 mt-2 flex flex-wrap gap-2 items-center">
-                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider mr-2">ဝန်ဆောင်မှုများ:</span>
-                            {selectedStation._source.station__ac_dc__option_ac_dc_station === 'dc' && (
-                              <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-3 py-1.5 rounded-lg text-xs font-bold border border-blue-200 dark:border-blue-800 shadow-sm">⚡ DC Fast Charging</span>
-                            )}
-                            {selectedStation._source.has_backup_power && (
-                              <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 px-3 py-1.5 rounded-lg text-xs font-bold border border-green-200 dark:border-green-800 shadow-sm">✓ 24hr Backup Power</span>
-                            )}
-                            {selectedStation._source.list_of_plugs_types_list_option_plug_types?.map((plug: string) => (
-                              <span key={plug} className="bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 px-3 py-1.5 rounded-lg text-xs font-bold uppercase border border-gray-300 dark:border-gray-600 shadow-sm">
-                                🔌 {plug.replace('dc_', '').replace('_', ' ')}
-                              </span>
-                            ))}
-                          </div>
+                          <div><span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Clock size={14} /> ဖွင့်ချိန်/ပိတ်ချိန်</span><strong className="dark:text-white">{selectedStation._source.always_open__yes_no__boolean ? '24 Hours (အမြဲဖွင့်သည်)' : selectedStation._source.opening_hours_text}</strong></div>
+                          <div><span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Zap size={14} /> ဈေးနှုန်း (1 kWh)</span><strong className="text-green-600 dark:text-green-400 text-lg">{selectedStation._source.price_text} Ks</strong></div>
+                          <div className="col-span-2 md:col-span-1"><span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Info size={14} /> ဆက်သွယ်ရန်</span><strong className="dark:text-white">{selectedStation._source.phone_number_text || 'ဖုန်းနံပါတ်မရှိပါ'}</strong></div>
                         </div>
                       </div>
                     </div>
@@ -895,38 +850,16 @@ export default function Home() {
                         <button disabled={selectedStation?._source?.has_backup_power} onClick={() => setEpcStatus('POWER_ON')} className={`flex-1 py-4 rounded-xl flex items-center justify-center gap-2 font-bold text-sm transition-all shadow-sm ${epcStatus === 'POWER_ON' ? 'bg-green-500 text-white ring-4 ring-green-500/30' : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 border dark:border-gray-700'}`}><Zap size={20} /> မီးလာနေသည်</button>
                         <button disabled={selectedStation?._source?.has_backup_power} onClick={() => setEpcStatus('POWER_OFF')} className={`flex-1 py-4 rounded-xl flex items-center justify-center gap-2 font-bold text-sm transition-all shadow-sm ${epcStatus === 'POWER_OFF' ? 'bg-red-500 text-white ring-4 ring-red-500/30' : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 border dark:border-gray-700'}`}><ZapOff size={20} /> မီးပျက်နေသည်</button>
                       </div>
-                      <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mt-4 text-center bg-white/50 dark:bg-gray-900/50 py-2 rounded-lg">
-                        {selectedStation?._source?.has_backup_power
-                          ? (<span className="text-red-600 dark:text-red-400 font-bold flex items-center justify-center gap-1">
-                            <AlertTriangle size={14} /> ✓ Backup Power ရှိသောကြောင့် EPC မီးအခြေအနေ ရွေးရန်မလိုပါ။
-                          </span>)
-                          : `(နောက်တစ်ကြိမ် မီးပြောင်းလဲမည့်အချိန်: ${nextTimeStr})`
-                        }
-                      </p>
+                      <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mt-4 text-center bg-white/50 dark:bg-gray-900/50 py-2 rounded-lg">{selectedStation?._source?.has_backup_power ? (<span className="text-red-600 dark:text-red-400 font-bold flex items-center justify-center gap-1"><AlertTriangle size={14} /> ✓ Backup Power ရှိသောကြောင့် EPC မီးအခြေအနေ ရွေးရန်မလိုပါ။</span>) : `(နောက်တစ်ကြိမ် မီးပြောင်းလဲမည့်အချိန်: ${nextTimeStr})`}</p>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8">
-                      <div className="md:col-span-2">
-                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">ကားအမျိုးအစား (Vehicle Model)</label>
-                        <select className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 outline-none focus:ring-2 focus:ring-blue-500 font-medium" value={calcParams.vehicleId || ""} onChange={(e) => { const car = vehicleData.find(v => v.id === e.target.value); if (car) updateCalcParams({ vehicleId: e.target.value, batteryCapacityKwh: car.batteryKwh, isLeapmotorB10: car.isLeapmotor }); }}>
-                          {vehicleData.map(car => <option key={car.id} value={car.id}>{car.brand} {car.model} ({car.batteryKwh} kWh)</option>)}
-                        </select>
-                      </div>
+                      <div className="md:col-span-2"><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">ကားအမျိုးအစား (Vehicle Model)</label><select className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 outline-none focus:ring-2 focus:ring-blue-500 font-medium" value={calcParams.vehicleId || ""} onChange={(e) => { const car = vehicleData.find(v => v.id === e.target.value); if (car) updateCalcParams({ vehicleId: e.target.value, batteryCapacityKwh: car.batteryKwh, isLeapmotorB10: car.isLeapmotor }); }}>{vehicleData.map(car => <option key={car.id} value={car.id}>{car.brand} {car.model} ({car.batteryKwh} kWh)</option>)}</select></div>
                       <div><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Battery Capacity (kWh)</label><input type="number" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.batteryCapacityKwh} onChange={e => updateCalcParams({ batteryCapacityKwh: Number(e.target.value) })} /></div>
-                      <div>
-                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Charger Speed (kW)</label>
-                        <div className="relative">
-                          <input type="number" list="charger-speeds" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Speed ရွေးပါ သို့မဟုတ် ရိုက်ထည့်ပါ" value={calcParams.chargerKw} onChange={(e) => updateCalcParams({ chargerKw: e.target.value === '' ? '' as any : Number(e.target.value) })} onBlur={() => { if (!calcParams.chargerKw || Number(calcParams.chargerKw) <= 0) updateCalcParams({ chargerKw: 30 }) }} />
-                          <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400"><ChevronDown size={18} /></div>
-                          <datalist id="charger-speeds"><option value={30}>30 kW</option><option value={40}>40 kW</option><option value={50}>50 kW</option><option value={60}>60 kW</option><option value={120}>120 kW</option></datalist>
-                        </div>
-                      </div>
+                      <div><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Charger Speed (kW)</label><div className="relative"><input type="number" list="charger-speeds" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Speed" value={calcParams.chargerKw} onChange={(e) => updateCalcParams({ chargerKw: e.target.value === '' ? '' as any : Number(e.target.value) })} onBlur={() => { if (!calcParams.chargerKw || Number(calcParams.chargerKw) <= 0) updateCalcParams({ chargerKw: 30 }) }} /><div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400"><ChevronDown size={18} /></div><datalist id="charger-speeds"><option value={30}>30 kW</option><option value={40}>40 kW</option><option value={50}>50 kW</option><option value={60}>60 kW</option><option value={120}>120 kW</option></datalist></div></div>
                       <div><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">တစ်ပြိုင်နက်သွင်းနိုင်သော အစီးအရေ</label><input type="number" min="1" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.activePorts} onChange={e => updateCalcParams({ activePorts: e.target.value === '' ? '' as any : Number(e.target.value) })} onBlur={() => { if ((calcParams.activePorts as any) === '' || Number(calcParams.activePorts) < 1) updateCalcParams({ activePorts: 1 }) }} /></div>
                       <div><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">ရှေ့တွင်စောင့်နေသော ကား (စီး)</label><input type="number" min="0" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-medium outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.carsInQueue} onChange={e => updateCalcParams({ carsInQueue: e.target.value === '' ? '' as any : Number(e.target.value) })} onBlur={() => { if ((calcParams.carsInQueue as any) === '' || Number(calcParams.carsInQueue) < 0) updateCalcParams({ carsInQueue: 0 }) }} /></div>
-                      <div>
-                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Current Battery %</label>
-                        <input type="number" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-black text-blue-600 outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.currentPercent} onChange={e => updateCalcParams({ currentPercent: e.target.value === '' ? '' as any : Number(e.target.value) })} onBlur={() => { if ((calcParams.currentPercent as any) === '' || Number(calcParams.currentPercent) < 0) updateCalcParams({ currentPercent: 0 }); else if (Number(calcParams.currentPercent) > 100) updateCalcParams({ currentPercent: 100 }); }} />
-                      </div>
+                      <div className="md:col-span-2"><label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Current Battery %</label><input type="number" className="w-full border p-4 rounded-xl dark:bg-gray-900 dark:border-gray-700 font-black text-blue-600 outline-none focus:ring-2 focus:ring-blue-500" value={calcParams.currentPercent} onChange={e => updateCalcParams({ currentPercent: e.target.value === '' ? '' as any : Number(e.target.value) })} onBlur={() => { if ((calcParams.currentPercent as any) === '' || Number(calcParams.currentPercent) < 0) updateCalcParams({ currentPercent: 0 }); else if (Number(calcParams.currentPercent) > 100) updateCalcParams({ currentPercent: 100 }); }} /></div>
                       
                       <div className="md:col-span-2 bg-gray-50 dark:bg-gray-900 p-5 rounded-2xl border border-gray-200 dark:border-gray-700 mt-2">
                         <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-4">အားသွင်းမည့် ပမာဏ သတ်မှတ်ရန် (ရွေးချယ်ပါ)</label>
@@ -987,21 +920,9 @@ export default function Home() {
                         </div>
 
                         {calcResult.blackoutMins > 0 && <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 rounded-xl text-red-700 text-sm font-bold flex gap-2"><AlertTriangle size={18} className="shrink-0" /> EPC မီးပျက်ချိန် {formatDuration(calcResult.blackoutMins / 60)} ပါဝင်သွားသဖြင့် အချိန်ပိုကြာပါမည်။</div>}
-                        {calcResult.stationBreakMins > 0 && (
-                          <div className="mb-4 p-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 rounded-xl text-orange-700 text-sm font-bold flex gap-2">
-                            <Clock size={18} className="shrink-0" /> ဆိုင်၏ နားချိန် ({calcResult.stationBreakText || 'နေ့လည်'}) နှင့် တိုက်ဆိုင်နေသဖြင့် အားသွင်းကြာချိန် ပိုမိုကြာမြင့်ပါမည်။
-                          </div>
-                        )}
-                        {calcResult.stationClosedWarning && (
-                          <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 rounded-xl text-red-700 text-sm font-bold flex gap-2">
-                            <AlertTriangle size={18} className="shrink-0" /> ⚠️ သတိပြုရန်: ဤအချိန်ဇယားအရ ဆိုင်ပိတ်ချိန်ကို ကျော်လွန်သွားမည်ဖြစ်သဖြင့် နောက်နေ့ ဆိုင်ဖွင့်မှသာ အားဆက်သွင်းနိုင်ပါမည်။
-                          </div>
-                        )}
-                        {!selectedStation?._source?.always_open__yes_no__boolean && (
-                          <div className="mb-6 p-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 rounded-xl text-orange-700 text-sm font-bold flex gap-2">
-                            <Clock size={18} className="shrink-0" /> ဤ Station သည် 24 နာရီဖွင့်လှစ်ခြင်းမရှိပါ။ နေ့လည် (၂ နာရီမှ ၃ နာရီ) နားချိန် သို့မဟုတ် ဆိုင်ပိတ်ချိန်နှင့် တိုက်ဆိုင်ပါက အထက်ပါကြာချိန်ထက် ပိုမိုကြာမြင့်နိုင်ပါသည်။
-                          </div>
-                        )}
+                        {calcResult.stationBreakMins > 0 && <div className="mb-4 p-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 rounded-xl text-orange-700 text-sm font-bold flex gap-2"><Clock size={18} className="shrink-0" /> ဆိုင်၏ နားချိန် ({calcResult.stationBreakText || 'နေ့လည်'}) နှင့် တိုက်ဆိုင်နေသဖြင့် အားသွင်းကြာချိန် ပိုမိုကြာမြင့်ပါမည်။</div>}
+                        {calcResult.stationClosedWarning && <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 rounded-xl text-red-700 text-sm font-bold flex gap-2"><AlertTriangle size={18} className="shrink-0" /> ⚠️ သတိပြုရန်: ဤအချိန်ဇယားအရ ဆိုင်ပိတ်ချိန်ကို ကျော်လွန်သွားမည်ဖြစ်သဖြင့် နောက်နေ့ ဆိုင်ဖွင့်မှသာ အားဆက်သွင်းနိုင်ပါမည်။</div>}
+                        {!selectedStation?._source?.always_open__yes_no__boolean && <div className="mb-6 p-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 rounded-xl text-orange-700 text-sm font-bold flex gap-2"><Clock size={18} className="shrink-0" /> ဤ Station သည် 24 နာရီဖွင့်လှစ်ခြင်းမရှိပါ။ ဆိုင်ပိတ်ချိန်နှင့် တိုက်ဆိုင်ပါက အားဆက်သွင်းနိုင်မည်မဟုတ်ပါ။</div>}
 
                         <div className="space-y-5 text-sm md:text-base font-medium text-gray-600 dark:text-gray-300">
                           <div className="flex justify-between items-center"><span className="flex items-center gap-2"><Clock size={18} /> ကားစောင့်ရမည့် ကြာချိန်</span><span className="font-black text-orange-500 text-lg bg-orange-100 dark:bg-orange-900/30 px-3 py-1 rounded-lg">{calcResult.waitDurationStr}</span></div>
@@ -1039,60 +960,105 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="bg-gray-50 dark:bg-gray-900 p-5 rounded-2xl mb-6 flex justify-between items-center text-left border border-gray-200 dark:border-gray-800">
-                  <div><p className="text-xs text-gray-500 font-bold uppercase mb-1">ကျန်ရှိချိန်</p><p className="font-black text-xl">{calcResult?.chargeDurationStr}</p></div>
-                  <div className="text-right"><p className="text-xs text-gray-500 font-bold uppercase mb-1">ပြီးဆုံးမည့် အချိန်</p><p className="font-black text-xl text-blue-600 dark:text-blue-400">{calcResult?.finishTimeStr}</p></div>
+                {calcParams.currentPercent >= 100 && (
+                  <div className="mb-6 bg-green-100 border-2 border-green-500 text-green-800 p-4 rounded-xl font-bold animate-pulse">
+                    ကားအားပြည့်သွားပါပြီ! အားသွင်းခြင်းကို ရပ်တန့်ရန် 'Stop' ကို နှိပ်ပါ။
+                  </div>
+                )}
+
+                {/* Live Estimation to Target */}
+                <div className="grid grid-cols-2 gap-4 mb-6">
+                   <div className="bg-yellow-50 dark:bg-yellow-900/20 p-5 rounded-2xl shadow-inner border border-yellow-100 dark:border-yellow-800/50">
+                      <p className="text-xs text-yellow-700 dark:text-yellow-500 font-bold uppercase tracking-wider">လက်ရှိ ကျသင့်ငွေ</p>
+                      <p className="font-black text-2xl text-yellow-600 dark:text-yellow-400 mt-1">{Math.round(activeSession.consumedKwh * calcParams.pricePerKwh).toLocaleString()} <span className="text-sm font-normal">Ks</span></p>
+                   </div>
+                   <div className="bg-gray-50 dark:bg-gray-900 p-5 rounded-2xl shadow-inner border border-gray-200 dark:border-gray-800">
+                      <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Target ရောက်ရန် ကျန်ရှိချိန်</p>
+                      <p className="font-black text-xl text-gray-800 dark:text-white mt-2">
+                        {calcParams.currentPercent < (calcParams.limitMode === 'percent' ? calcParams.targetPercent : 100) 
+                          ? calculateCharging({ ...calcParams, currentPercent: calcParams.currentPercent }, new Date(), epcStatus, {maxSoc: calcParams.limitMode === 'percent' ? calcParams.targetPercent : 100}).chargeDurationStr 
+                          : "Target ပြည့်သွားပါပြီ"
+                        }
+                      </p>
+                   </div>
                 </div>
 
                 {energyLossKwh > 0 && <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 rounded-xl text-sm text-left">⚠️ ကားနှင့် Charger ကြား စွမ်းအင်အလေအလွင့် (Efficiency Loss): <strong>{energyLossKwh.toFixed(2)} kWh</strong> ရှိနေပါသည်။</div>}
 
-                <div className="bg-yellow-50 dark:bg-yellow-900/10 p-5 rounded-2xl border border-yellow-200 dark:border-yellow-800/50 mb-8 text-left">
-                  <p className="font-bold text-yellow-800 dark:text-yellow-500 flex items-center gap-2 mb-4"><RefreshCw size={18} /> Manual Sync ပြုလုပ်ရန်</p>
+                <div className="bg-blue-50 dark:bg-blue-900/10 p-5 rounded-2xl border border-blue-200 dark:border-blue-800/50 mb-8 text-left">
+                  <p className="font-bold text-blue-800 dark:text-blue-500 flex items-center gap-2 mb-4"><RefreshCw size={18} /> Manual Sync ပြုလုပ်ရန်</p>
                   <div className="flex flex-col md:flex-row gap-3">
                     <input type="number" placeholder="ကားစခရင်မှ %" className="flex-1 border p-3 rounded-xl bg-white dark:bg-gray-800 dark:border-gray-700" value={syncPercentInput} onChange={(e) => setSyncPercentInput(e.target.value)} />
                     <input type="number" placeholder="Charger မှ kWh" className="flex-1 border p-3 rounded-xl bg-white dark:bg-gray-800 dark:border-gray-700" value={syncKwhInput} onChange={(e) => setSyncKwhInput(e.target.value)} />
-                    <button onClick={handleSyncData} className="bg-yellow-500 hover:bg-yellow-600 text-white px-8 py-3 rounded-xl font-bold shadow-md transition">Sync</button>
+                    <button onClick={handleSyncData} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-bold shadow-md transition">Sync</button>
                   </div>
                 </div>
 
-                <button onClick={() => handleCompleteCharging(calcParams.currentPercent, activeSession.consumedKwh)} className="w-full bg-red-500 text-white py-4 rounded-xl font-bold shadow-lg hover:bg-red-600 transition">အားသွင်းခြင်း ရပ်မည် (Stop)</button>
+                <button onClick={promptEndSession} className="w-full bg-red-500 text-white py-4 rounded-xl font-bold shadow-lg hover:bg-red-600 transition">အားသွင်းခြင်း ရပ်မည် (Stop)</button>
               </section>
             )}
 
+            {/* Modal for Manual Cost Input when Stop is clicked */}
+            {showStopModal && (
+              <div className="fixed inset-0 z-50 bg-gray-900/80 backdrop-blur-sm flex justify-center items-center p-4">
+                 <div className="bg-white dark:bg-gray-800 w-full max-w-sm rounded-3xl shadow-2xl p-6">
+                    <h3 className="text-xl font-black text-center mb-4 text-gray-800 dark:text-white">အားသွင်းခြင်း အဆုံးသတ်မည်</h3>
+                    <p className="text-sm text-gray-500 text-center mb-6">ကျသင့်ငွေ ပမာဏကို စစ်ဆေး၍ လိုအပ်ပါက ပြင်ဆင်နိုင်ပါသည်။</p>
+                    <div className="mb-6">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">တကယ်ပေးရသော ပမာဏ (Cost in Ks)</label>
+                      <input type="number" className="w-full border-2 border-blue-500 p-4 rounded-xl font-black text-xl text-center text-blue-600 outline-none" value={manualCostInput} onChange={e => setManualCostInput(e.target.value)} />
+                    </div>
+                    <div className="flex gap-3">
+                      <button onClick={() => setShowStopModal(false)} className="flex-1 py-3 rounded-xl bg-gray-100 text-gray-600 font-bold hover:bg-gray-200 transition">မရပ်သေးပါ</button>
+                      <button onClick={finalizeCompleteCharging} className="flex-1 py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-700 transition shadow-md">အတည်ပြုမည်</button>
+                    </div>
+                 </div>
+              </div>
+            )}
+
+            {/* THERMAL RECEIPT UI */}
             {showReceipt && finalReceiptData && (
-              <section className="bg-white dark:bg-gray-800 p-8 md:p-10 rounded-3xl shadow-xl border border-green-200 dark:border-green-800">
-                <div className="text-center mb-10">
-                  <CheckCircle size={70} className="text-green-500 mx-auto mb-4" />
-                  <h2 className="text-3xl font-black text-gray-800 dark:text-white">အားသွင်းခြင်း ပြီးဆုံးပါပြီ</h2>
-                  <p className="text-gray-500 font-medium mt-2">{finalReceiptData.date}</p>
+              <section className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700 max-w-md mx-auto">
+                <div className="text-center mb-6">
+                  <CheckCircle size={60} className="text-green-500 mx-auto mb-3" />
+                  <h2 className="text-2xl font-black text-gray-800 dark:text-white">အားသွင်းခြင်း ပြီးဆုံးပါပြီ</h2>
                 </div>
 
-                <div className="bg-gray-50 dark:bg-gray-900 p-6 md:p-8 rounded-2xl mb-8 space-y-4 shadow-inner border border-gray-100 dark:border-gray-800">
-                  <h3 className="font-black text-lg border-b pb-3 dark:border-gray-700 dark:text-white mb-4">Payment Receipt</h3>
-                  <div className="flex justify-between"><span className="text-gray-500 font-medium">Station</span><span className="font-bold text-right">{finalReceiptData.station}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-500 font-medium">Vehicle</span><span className="font-bold text-right">{finalReceiptData.vehicle}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-500 font-medium">Battery</span><span className="font-bold">{finalReceiptData.startPercent}% ➔ {finalReceiptData.endPercent}%</span></div>
-                  <div className="flex justify-between"><span className="text-gray-500 font-medium">Consumed Energy</span><span className="font-black text-blue-600 dark:text-blue-400">{finalReceiptData.kwh} kWh</span></div>
-                  {finalReceiptData.lossKwh > 0 && <div className="flex justify-between"><span className="text-red-500 font-medium">Efficiency Loss</span><span className="font-bold text-red-500">{finalReceiptData.lossKwh} kWh</span></div>}
-                  <div className="flex justify-between text-xl font-black pt-5 border-t dark:border-gray-700 text-green-600 dark:text-green-400 mt-2"><span>စုစုပေါင်း ကျသင့်ငွေ</span><span>{finalReceiptData.cost.toLocaleString()} Ks</span></div>
+                <div className="bg-[#f9f9f9] dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-6 rounded-sm shadow-inner relative overflow-hidden mb-6" style={{ fontFamily: 'monospace' }}>
+                  {/* Receipt ZigZag Effect */}
+                  <div className="absolute top-0 left-0 w-full h-2 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPjxwb2x5Z29uIHBvaW50cz0iMCwwIDQsOCA4LDAiIGZpbGw9IiNmOWY5ZjkiLz48L3N2Zz4=')]"></div>
+                  
+                  <div className="text-center border-b-2 border-dashed border-gray-300 dark:border-gray-700 pb-4 mb-4 mt-2">
+                    <h3 className="font-black text-xl dark:text-white">EV SMART PLANNER</h3>
+                    <p className="text-xs text-gray-500 mt-1">CHARGING RECEIPT</p>
+                  </div>
+                  
+                  <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300 border-b-2 border-dashed border-gray-300 dark:border-gray-700 pb-4 mb-4">
+                    <div className="flex justify-between"><span>Date:</span><span>{finalReceiptData.date}</span></div>
+                    <div className="flex justify-between"><span>Station:</span><span className="text-right truncate max-w-[180px]">{finalReceiptData.station}</span></div>
+                    <div className="flex justify-between"><span>Vehicle:</span><span>{finalReceiptData.vehicle}</span></div>
+                  </div>
+                  
+                  <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300 border-b-2 border-dashed border-gray-300 dark:border-gray-700 pb-4 mb-4">
+                    <div className="flex justify-between"><span>Start Battery:</span><span>{finalReceiptData.startPercent}%</span></div>
+                    <div className="flex justify-between"><span>End Battery:</span><span>{finalReceiptData.endPercent}%</span></div>
+                    <div className="flex justify-between"><span>Consumed Energy:</span><span>{finalReceiptData.kwh} kWh</span></div>
+                    {finalReceiptData.lossKwh > 0 && <div className="flex justify-between text-red-500"><span>Energy Loss:</span><span>{finalReceiptData.lossKwh} kWh</span></div>}
+                    <div className="flex justify-between"><span>Duration:</span><span>{finalReceiptData.actualMins} mins</span></div>
+                  </div>
+
+                  <div className="flex justify-between items-center pt-2">
+                    <span className="font-bold text-lg dark:text-white">TOTAL AMOUNT:</span>
+                    <span className="font-black text-2xl dark:text-white">{finalReceiptData.cost.toLocaleString()} Ks</span>
+                  </div>
+
+                  <div className="absolute bottom-0 left-0 w-full h-2 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPjxwb2x5Z29uIHBvaW50cz0iMCw4IDQsMCA4LDgiIGZpbGw9IiNmOWY5ZjkiLz48L3N2Zz4=')]"></div>
                 </div>
 
-                <h3 className="font-bold text-lg mb-4 dark:text-white flex items-center gap-2"><Activity size={20} className="text-blue-500" /> အားသွင်းမှု မှတ်တမ်း (Timeline)</h3>
-                <div className="h-64 w-full mb-8 bg-gray-50 dark:bg-gray-900 p-4 rounded-2xl border border-gray-100 dark:border-gray-800">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={JSON.parse(finalReceiptData.timelineJson)}>
-                      <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                      <XAxis dataKey="time" fontSize={12} />
-                      <YAxis yAxisId="left" domain={[0, 100]} stroke="#10B981" fontSize={12} />
-                      <YAxis yAxisId="right" orientation="right" stroke="#3B82F6" fontSize={12} />
-                      <Tooltip contentStyle={{ borderRadius: '12px', backgroundColor: '#1F2937', color: '#fff', border: 'none' }} />
-                      <Line yAxisId="left" name="Battery %" type="monotone" dataKey="percent" stroke="#10B981" strokeWidth={3} dot={{ r: 4 }} />
-                      <Line yAxisId="right" name="Consumed kWh" type="monotone" dataKey="kwh" stroke="#3B82F6" strokeWidth={3} dot={{ r: 4 }} />
-                    </LineChart>
-                  </ResponsiveContainer>
+                <div className="flex gap-3 mb-6">
+                   <button onClick={downloadReceiptImage} className="flex-1 bg-green-100 hover:bg-green-200 text-green-700 py-3 rounded-xl font-bold transition flex justify-center items-center gap-2 dark:bg-green-900/30 dark:text-green-400 border border-green-200 dark:border-green-800"><Download size={18} /> Save Receipt</button>
+                   <button onClick={() => setShowReceipt(false)} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-bold shadow-md transition">Home သို့ပြန်သွားမည်</button>
                 </div>
-
-                <button onClick={() => setShowReceipt(false)} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg hover:bg-blue-700 transition">ပင်မစာမျက်နှာသို့ ပြန်သွားမည်</button>
               </section>
             )}
           </div>
@@ -1154,9 +1120,18 @@ export default function Home() {
                 ) : (
                   <>
                     <div className="bg-white dark:bg-gray-800 p-5 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col justify-between"><div className="w-10 h-10 bg-blue-50 dark:bg-blue-900/30 rounded-full flex items-center justify-center mb-4"><Route className="text-blue-500" size={20} /></div><div><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">ခရီးစဉ်အကွာအဝေး</p><p className="text-2xl font-black dark:text-white mt-1">{dashboardStats.totalDist.toLocaleString()} <span className="text-sm font-bold text-gray-400">km</span></p></div></div>
-                    <div className="bg-white dark:bg-gray-800 p-5 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col justify-between"><div className="w-10 h-10 bg-orange-50 dark:bg-orange-900/30 rounded-full flex items-center justify-center mb-4"><ZapOff className="text-orange-500" size={20} /></div><div><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">သုံးစွဲခဲ့သော စွမ်းအင်</p><p className="text-2xl font-black dark:text-white mt-1">{dashboardStats.totalUsedKwh.toFixed(1)} <span className="text-sm font-bold text-gray-400">kWh</span></p></div></div>
+                    {/* 👈 FIXED: သုံးစွဲခဲ့သောစွမ်းအင် ကတ်တွင် 1kWh လျှင် 750Ks ဖြင့် ကုန်ကျငွေတွက်ပြထားပါသည် */}
+                    <div className="bg-white dark:bg-gray-800 p-5 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col justify-between">
+                      <div className="w-10 h-10 bg-orange-50 dark:bg-orange-900/30 rounded-full flex items-center justify-center mb-4"><ZapOff className="text-orange-500" size={20} /></div>
+                      <div>
+                        <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">သုံးစွဲခဲ့သော စွမ်းအင်</p>
+                        <p className="text-2xl font-black dark:text-white mt-1">{dashboardStats.totalUsedKwh.toFixed(1)} <span className="text-sm font-bold text-gray-400">kWh</span></p>
+                        <p className="text-[11px] font-bold text-yellow-600 mt-2 bg-yellow-50 dark:bg-yellow-900/20 inline-block px-2 py-1 rounded-md border border-yellow-100 dark:border-yellow-900/50">≈ {Math.round(dashboardStats.totalUsedKwh * 750).toLocaleString()} Ks</p>
+                      </div>
+                    </div>
                     <div className="bg-white dark:bg-gray-800 p-5 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col justify-between"><div className="w-10 h-10 bg-green-50 dark:bg-green-900/30 rounded-full flex items-center justify-center mb-4"><BatteryCharging className="text-green-500" size={20} /></div><div><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">အားပြန်သွင်းမှု</p><p className="text-2xl font-black dark:text-white mt-1">{dashboardStats.totalRecharged.toFixed(1)} <span className="text-sm font-bold text-gray-400">kWh</span></p></div></div>
-                    <div className="bg-white dark:bg-gray-800 p-5 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col justify-between"><div className="w-10 h-10 bg-red-50 dark:bg-red-900/30 rounded-full flex items-center justify-center mb-4"><CreditCard className="text-red-500" size={20} /></div><div><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">ကုန်ကျစရိတ်</p><p className="text-2xl font-black dark:text-white mt-1">{dashboardStats.totalSpent.toLocaleString()} <span className="text-sm font-bold text-gray-400">Ks</span></p></div></div>
+                    {/* 👈 FIXED: "ကုန်ကျစရိတ်" မှ "အားသွင်းကုန်ကျစရိတ်" သို့ အမည်ပြောင်းထားပါသည် */}
+                    <div className="bg-white dark:bg-gray-800 p-5 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col justify-between"><div className="w-10 h-10 bg-red-50 dark:bg-red-900/30 rounded-full flex items-center justify-center mb-4"><CreditCard className="text-red-500" size={20} /></div><div><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">အားသွင်းကုန်ကျစရိတ်</p><p className="text-2xl font-black dark:text-white mt-1">{dashboardStats.totalSpent.toLocaleString()} <span className="text-sm font-bold text-gray-400">Ks</span></p></div></div>
                   </>
                 )}
               </div>
@@ -1169,7 +1144,7 @@ export default function Home() {
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart data={dashboardStats.processedTrips.filter(t => t.parsedMonth === (selectedMonth || new Date().toISOString().substring(0, 7)))}>
                       <CartesianGrid strokeDasharray="3 3" opacity={0.1} vertical={false} />
-                      <XAxis dataKey="Date" fontSize={11} tickFormatter={(val) => String(val).substring(0, 5)} axisLine={false} tickLine={false} />
+                      <XAxis dataKey="Date" fontSize={11} tickFormatter={(val) => cleanDateStr(val).substring(0, 5)} axisLine={false} tickLine={false} />
                       <YAxis yAxisId="left" fontSize={11} axisLine={false} tickLine={false} />
                       <YAxis yAxisId="right" orientation="right" fontSize={11} axisLine={false} tickLine={false} />
                       <Tooltip contentStyle={{ borderRadius: '16px', backgroundColor: '#111827', color: '#fff', border: 'none', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)' }} />
@@ -1187,7 +1162,6 @@ export default function Home() {
                 <div>
                   <h3 className="font-black text-lg text-blue-900 dark:text-blue-300 mb-6 flex items-center gap-2"><Route size={20} /> Since Last Charge Data</h3>
                   <div className="grid grid-cols-2 gap-5 mb-8">
-                    {/* 👈 NEW: Added Date Picker for Trip Log */}
                     <div className="col-span-2"><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">Date & Time</label><input type="datetime-local" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-bold outline-none focus:border-blue-500" value={tripInput.date} onChange={e => setTripInput({ ...tripInput, date: e.target.value })} /></div>
                     <div><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">Odometer (km)</label><input type="number" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-bold outline-none focus:border-blue-500" value={tripInput.distance} onChange={e => setTripInput({ ...tripInput, distance: e.target.value })} /></div>
                     <div><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">Avg (kWh/100km)</label><input type="number" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-bold outline-none focus:border-blue-500" value={tripInput.avgKwh} onChange={e => setTripInput({ ...tripInput, avgKwh: e.target.value })} /></div>
@@ -1208,7 +1182,6 @@ export default function Home() {
                 <div>
                   <h3 className="font-black text-lg text-indigo-900 dark:text-indigo-300 mb-6 flex items-center gap-2"><RefreshCw size={20} /> Car Dashboard Sync</h3>
                   <div className="grid grid-cols-2 gap-5 mb-6">
-                    {/* 👈 NEW: Added Date Picker for Car Sync */}
                     <div className="col-span-2"><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">Date & Time</label><input type="datetime-local" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-bold outline-none focus:border-indigo-500" value={statusInput.date} onChange={e => setStatusInput({ ...statusInput, date: e.target.value })} /></div>
                     <div><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">လက်ရှိ Battery (%)</label><input type="number" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-black text-indigo-600 outline-none focus:border-indigo-500" value={statusInput.battery} onChange={e => setStatusInput({ ...statusInput, battery: e.target.value, soh: '100' })} /></div>
                     <div><label className="block text-xs font-bold mb-2 text-gray-600 dark:text-gray-400 uppercase tracking-wide">Dashboard Range (km)</label><input type="number" className="w-full border-2 border-white dark:border-gray-700 p-4 rounded-xl bg-white dark:bg-gray-800 shadow-sm font-bold text-green-600 outline-none focus:border-indigo-500" value={statusInput.range} onChange={e => setStatusInput({ ...statusInput, range: e.target.value })} /></div>
@@ -1221,7 +1194,7 @@ export default function Home() {
                       <div key={idx} className="flex justify-between items-center bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700">
                         <div className="text-sm">
                           <p className="font-bold text-indigo-600 dark:text-indigo-400">{vLog.Battery_Percent}% <span className="text-gray-400">|</span> {vLog.Dash_Range_km} km</p>
-                          <p className="text-xs text-gray-500">{vLog.Date}</p>
+                          <p className="text-xs text-gray-500">{cleanDateStr(vLog.Date)}</p>
                         </div>
                         <button onClick={() => handleDeleteRecord('Vehicle_Status', vLog.ID)} className="text-red-400 hover:text-red-600 p-2 bg-red-50 dark:bg-red-900/20 rounded-lg transition"><Trash2 size={16} /></button>
                       </div>
@@ -1236,20 +1209,33 @@ export default function Home() {
               <div className="overflow-x-auto p-4 md:p-6">
                 <table className="w-full text-sm text-left border-separate border-spacing-y-2">
                   <thead className="text-gray-500 bg-gray-50 dark:bg-gray-900 rounded-2xl">
-                    <tr><th className="p-4 rounded-l-2xl font-bold uppercase tracking-wider text-xs">Date</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Actual Dist.</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Avg kWh</th><th className="p-4 font-bold uppercase tracking-wider text-xs">Bat %</th><th className="p-4 rounded-r-2xl text-center"></th></tr>
+                    {/* 👈 FIXED: Added Cost column for Trip History */}
+                    <tr>
+                      <th className="p-4 rounded-l-2xl font-bold uppercase tracking-wider text-xs">Date</th>
+                      <th className="p-4 font-bold uppercase tracking-wider text-xs">Actual Dist.</th>
+                      <th className="p-4 font-bold uppercase tracking-wider text-xs">Avg kWh</th>
+                      <th className="p-4 font-bold uppercase tracking-wider text-xs">Bat %</th>
+                      <th className="p-4 font-bold uppercase tracking-wider text-xs">Cost</th>
+                      <th className="p-4 rounded-r-2xl text-center"></th>
+                    </tr>
                   </thead>
                   <tbody>
-                    {dashboardStats.processedTrips.length === 0 ? <tr><td colSpan={5} className="p-8 text-center text-gray-400 font-bold">No Trip Records</td></tr> : dashboardStats.processedTrips.slice().reverse().slice(0, 5).map((log, idx) => (
+                    {dashboardStats.processedTrips.length === 0 ? <tr><td colSpan={6} className="p-8 text-center text-gray-400 font-bold">No Trip Records</td></tr> : dashboardStats.processedTrips.slice().reverse().slice(0, 5).map((log, idx) => {
+                      // 👈 FIXED: Calculate trip cost (1kWh = 750 Ks) using actual_dist and Avg_Consumption
+                      const tripUsedKwh = (Number(log.actual_dist || 0) / 100) * Number(log.Avg_Consumption || log.AvgConsumption || 0);
+                      const tripCost = Math.round(tripUsedKwh * 750);
+                      return (
                       <tr key={idx} className="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-750 shadow-sm transition-all rounded-2xl group">
-                        <td className="p-4 rounded-l-2xl font-medium text-gray-600 dark:text-gray-300">{log.Date || log.Time}</td>
+                        <td className="p-4 rounded-l-2xl font-medium text-gray-600 dark:text-gray-300">{cleanDateStr(log.Date || log.Time)}</td>
                         <td className="p-4 font-black text-lg text-blue-600">{log.actual_dist} <span className="text-sm font-medium text-gray-400">km</span></td>
                         <td className="p-4 font-bold text-orange-500">{log.Avg_Consumption || log.AvgConsumption || 0}</td>
                         <td className="p-4 font-black text-green-500 bg-green-50/50 dark:bg-green-900/10 group-hover:bg-green-50">{log.Remaining_Percent || log['Remaining Percent'] || 0}%</td>
+                        <td className="p-4 font-black text-yellow-600 bg-yellow-50/50 dark:bg-yellow-900/10 rounded-xl">{tripCost.toLocaleString()} <span className="text-xs font-medium text-gray-500">Ks</span></td>
                         <td className="p-4 rounded-r-2xl text-right">
                           <button onClick={() => handleDeleteRecord('Trip_Logs', log.ID)} className="text-red-400 hover:text-red-600 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 p-2 rounded-lg transition"><Trash2 size={16} /></button>
                         </td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>
@@ -1258,8 +1244,6 @@ export default function Home() {
             <div className="mt-8">
               <h3 className="font-black text-xl dark:text-white px-2 mb-6 flex items-center gap-3"><History size={24} className="text-blue-500" /> အားသွင်းမှု မှတ်တမ်းများ (Charging History)</h3>
               <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden p-6 md:p-8">
-                
-                {/* 👈 NEW: Advanced Sorting Toggles for History Table */}
                 <div className="flex flex-col md:flex-row gap-4 mb-6">
                   <div className="relative flex-1">
                     <Search className="absolute left-4 top-4 text-gray-400" size={20} />
@@ -1289,7 +1273,7 @@ export default function Home() {
                             <tr key={idx} className="bg-white dark:bg-gray-800 hover:bg-blue-50 dark:hover:bg-gray-700/50 shadow-sm border border-gray-100 dark:border-gray-700 rounded-2xl transition-all transform hover:scale-[1.01]">
                               <td onClick={() => { if (log.Timeline_Data) setSelectedHistoryLog(log); }} className="p-4 rounded-l-2xl whitespace-nowrap font-medium text-gray-600 dark:text-gray-300 cursor-pointer">
                                 <Clock size={14} className="inline mr-2 text-gray-400" />
-                                {log['Date & Time'] || log.Date || log.Time || '-'}
+                                {cleanDateStr(log['Date & Time'] || log.Date || log.Time || '-')}
                               </td>
                               <td onClick={() => { if (log.Timeline_Data) setSelectedHistoryLog(log); }} className="p-4 font-bold text-gray-800 dark:text-white cursor-pointer">{log.Station_Name || log.Station || '-'}</td>
                               <td className="p-4 font-bold text-gray-500">{log.Start_Percent || log['Start%'] || '-'}% <span className="text-gray-300 mx-1">➔</span> {log.End_Percent || log['End%'] || '-'}%</td>
@@ -1318,7 +1302,7 @@ export default function Home() {
                   <div className="p-6 overflow-y-auto flex-1 space-y-8">
                     <div className="grid grid-cols-2 gap-4 text-sm">
                       <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm p-4 rounded-2xl"><span className="text-gray-400 font-bold uppercase tracking-wider text-xs block mb-1">Station</span><strong className="dark:text-white text-base">{selectedHistoryLog.Station_Name || selectedHistoryLog.Station}</strong></div>
-                      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm p-4 rounded-2xl"><span className="text-gray-400 font-bold uppercase tracking-wider text-xs block mb-1">Date & Time</span><strong className="dark:text-white text-base">{selectedHistoryLog.Date || selectedHistoryLog.Time}</strong></div>
+                      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm p-4 rounded-2xl"><span className="text-gray-400 font-bold uppercase tracking-wider text-xs block mb-1">Date & Time</span><strong className="dark:text-white text-base">{cleanDateStr(selectedHistoryLog.Date || selectedHistoryLog.Time || selectedHistoryLog['Date & Time'])}</strong></div>
                     </div>
                     {selectedHistoryLog.Timeline_Data && selectedHistoryLog.Timeline_Data !== '[]' && selectedHistoryLog.Timeline_Data !== 'undefined' && (
                       <>
@@ -1380,7 +1364,6 @@ export default function Home() {
                 <div className="bg-blue-50 dark:bg-blue-900/10 p-6 rounded-3xl border border-blue-100 dark:border-blue-900/50"><p className="text-blue-400 text-xs font-bold uppercase tracking-wider mb-2">Total Distance</p><p className="font-black text-xl text-blue-600 dark:text-blue-400">{userProfile.totalDistance.toLocaleString()} <span className="text-sm font-bold">km</span></p></div>
               </div>
               
-              {/* 👈 NEW: Total Distance Form & Table in Profile */}
               <div className="px-8 mt-8">
                 <h3 className="font-black text-lg mb-4 dark:text-white flex items-center gap-2"><Route className="text-blue-500" /> Update Total Distance</h3>
                 <div className="bg-gray-50 dark:bg-gray-900 p-5 rounded-2xl border border-gray-100 dark:border-gray-800 mb-6">
@@ -1407,9 +1390,9 @@ export default function Home() {
                       {totalDistanceLogs.length === 0 ? (
                         <tr><td colSpan={3} className="p-4 text-center text-gray-400">No records found</td></tr>
                       ) : (
-                        [...totalDistanceLogs].sort((a,b) => new Date(b.DateTime || b.Date_Time).getTime() - new Date(a.DateTime || a.Date_Time).getTime()).map((log, idx) => (
+                        [...totalDistanceLogs].sort((a,b) => new Date(cleanDateStr(b.DateTime || b.Date_Time)).getTime() - new Date(cleanDateStr(a.DateTime || a.Date_Time)).getTime()).map((log, idx) => (
                           <tr key={idx} className="hover:bg-gray-50 dark:hover:bg-gray-750 transition">
-                            <td className="p-3 text-gray-600 dark:text-gray-300 font-medium">{log.DateTime || log.Date_Time}</td>
+                            <td className="p-3 text-gray-600 dark:text-gray-300 font-medium">{cleanDateStr(log.DateTime || log.Date_Time)}</td>
                             <td className="p-3 text-right font-black text-blue-600">{Number(log.Total_Distance).toLocaleString()}</td>
                             <td className="p-3 text-center"><button onClick={() => handleDeleteRecord('Total_Distance_Logs', log.ID)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16}/></button></td>
                           </tr>
