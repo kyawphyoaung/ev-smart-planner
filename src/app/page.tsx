@@ -29,7 +29,7 @@ const getFormattedSafeDate = (date = new Date()) => {
   hr = hr % 12;
   hr = hr ? hr : 12; 
   // ' ခံထားခြင်းဖြင့် Google Sheet က Date ကို အလိုအလျောက် ပြောင်းလဲပစ်ခြင်းမှ ကာကွယ်သည်
-  return `'${d}/${m}/${y}, ${hr}:${min} ${ampm}`; 
+  return `'${m}/${d}/${y}, ${hr}:${min} ${ampm}`; 
 };
 
 // ပြန်ဖတ်သည့်အခါ ' ပါလာလျှင် ဖယ်ထုတ်ပေးမည့် Helper
@@ -632,7 +632,8 @@ export default function Home() {
         const currentOdo = Number(event.data.Distance_km || event.data.Distance || event.data['Distance (km)'] || 0);
         let actualDist = currentOdo - baselineKm;
         if (actualDist < 0) actualDist = currentOdo;
-        processedTrips.push({ ...event.data, actual_dist: actualDist, parsedMonth: safeDateParse(event.data.Date || event.data.Time) });
+        const roundedActualDist = Number(actualDist.toFixed(2));
+        processedTrips.push({ ...event.data, actual_dist: roundedActualDist, parsedMonth: safeDateParse(event.data.Date || event.data.Time) });
         baselineKm = currentOdo;
       }
     });
